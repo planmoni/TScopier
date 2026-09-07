@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import {
   MANUAL_BROKER_OVERRIDE_REVERTED_ACTION,
   detectManualBrokerStopOverrides,
+  detectManualBrokerStopOverridesDetailed,
   isDriftSweepReconcileJob,
   manageSignalPath,
+  passiveDriftSweepSnapshot,
   notifyManualBrokerOverrideReverted,
   type ManualBrokerStopOverride,
 } from './manualBrokerOverrideNotification'
@@ -137,6 +139,58 @@ describe('detectManualBrokerStopOverrides', () => {
     assert.equal(overrides.length, 0)
   })
 
+
+  it('returns deliberate rejection reasons for classifier exits', () => {
+    assert.deepEqual(detectManualBrokerStopOverridesDetailed({
+      familyTrades: [],
+      perLegTargets: [{ stoploss: 3990, takeprofit: 4020 }],
+      ordersByTicket: new Map([[1001, { ticket: 1001, stopLoss: 3980, takeProfit: 4020 }]]),
+      nImmCwe: 0,
+    }).rejectedReasons.map(r => r.reason), ['empty_family_trades'])
+
+    assert.deepEqual(detectManualBrokerStopOverridesDetailed({
+      familyTrades: [leg('trade-1', 1001)],
+      perLegTargets: [],
+      ordersByTicket: new Map([[1001, { ticket: 1001, stopLoss: 3980, takeProfit: 4020 }]]),
+      nImmCwe: 0,
+    }).rejectedReasons.map(r => r.reason), ['empty_per_leg_targets'])
+
+    assert.deepEqual(detectManualBrokerStopOverridesDetailed({
+      familyTrades: [leg('trade-1', 1001)],
+      perLegTargets: [{ stoploss: 3990, takeprofit: 4020 }],
+      ordersByTicket: new Map(),
+      nImmCwe: 0,
+    }).rejectedReasons.map(r => r.reason), ['empty_broker_orders'])
+
+    assert.deepEqual(detectManualBrokerStopOverridesDetailed({
+      familyTrades: [leg('trade-1', 1001, { sl: 3980 })],
+      perLegTargets: [{ stoploss: 3990, takeprofit: 4020 }],
+      ordersByTicket: new Map([[1001, { ticket: 1001, stopLoss: 3980, takeProfit: 4020 }]]),
+      nImmCwe: 0,
+    }).rejectedReasons.map(r => r.reason), ['db_not_managed_targets'])
+  })
+
+  it('ignores frozen/CWE TP differences but still detects passive SL drift', () => {
+    const frozen = detectManualBrokerStopOverridesDetailed({
+      familyTrades: [leg('trade-1', 1001, { tp: 4030 })],
+      perLegTargets: [{ stoploss: 3990, takeprofit: 4020 }],
+      ordersByTicket: new Map([[1001, { ticket: 1001, stopLoss: 3980, takeProfit: 4040 }]]),
+      nImmCwe: 0,
+      tpFrozen: true,
+    })
+    assert.equal(frozen.overrides.length, 1)
+    assert.deepEqual(frozen.overrides[0]!.changedSides, ['sl'])
+
+    const cwe = detectManualBrokerStopOverridesDetailed({
+      familyTrades: [leg('trade-1', 1001, { tp: null })],
+      perLegTargets: [{ stoploss: 3990, takeprofit: 4020 }],
+      ordersByTicket: new Map([[1001, { ticket: 1001, stopLoss: 3990, takeProfit: 4040 }]]),
+      nImmCwe: 1,
+    })
+    assert.equal(cwe.overrides.length, 0)
+    assert.deepEqual(cwe.rejectedReasons.map(r => r.reason), ['broker_matches_target'])
+  })
+
   it('does not classify DB drift from a management/UI target change as broker manual override', () => {
     const overrides = detectManualBrokerStopOverrides({
       familyTrades: [leg('trade-1', 1001, { sl: 3980 })],
@@ -253,19 +307,30 @@ describe('manual broker override notification', () => {
       source_signal_id: 'anchor-1',
       anchor_signal_id: 'anchor-1',
       last_error: 'Drift sweep: open legs out of sync with channel SL/TP ladder',
+      virtual_pendings_snapshot: null,
     } as BasketReconcileJobRow
     const telegramMgmt = {
       source_signal_id: 'mgmt-1',
       anchor_signal_id: 'anchor-1',
       last_error: 'channel_stop_apply partial 1/2',
+      virtual_pendings_snapshot: null,
     } as BasketReconcileJobRow
     const tradesUi = {
       source_signal_id: 'anchor-1',
       anchor_signal_id: 'anchor-1',
       last_error: 'user_signal_override partial: 1 leg(s) failed',
+      virtual_pendings_snapshot: null,
+    } as BasketReconcileJobRow
+
+    const retriedDrift = {
+      source_signal_id: 'anchor-1',
+      anchor_signal_id: 'anchor-1',
+      last_error: 'Reconcile: 1/1 legs',
+      virtual_pendings_snapshot: passiveDriftSweepSnapshot(),
     } as BasketReconcileJobRow
 
     assert.equal(isDriftSweepReconcileJob(drift), true)
+    assert.equal(isDriftSweepReconcileJob(retriedDrift), true)
     assert.equal(isDriftSweepReconcileJob(telegramMgmt), false)
     assert.equal(isDriftSweepReconcileJob(tradesUi), false)
   })

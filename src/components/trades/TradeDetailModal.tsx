@@ -31,16 +31,23 @@ import {
   formatTradePrice,
   getTradeDisplayMeta,
 } from '../../lib/tradeDisplay'
+import {
+  getManualBrokerOverrideWarningForTrade,
+  manualOverrideManageSignalUrl,
+  type ManualBrokerOverrideWarningMaps,
+} from '../../lib/manualBrokerOverrideWarnings'
+import { ManualBrokerOverrideWarningNotice } from './ManualBrokerOverrideWarning'
 import { Badge } from '../ui/Badge'
 import { ReportTradeModal } from './ReportTradeModal'
 
 interface TradeDetailModalProps {
   trade: MtTrade | null
   userId: string | undefined
+  manualOverrideWarningMaps?: ManualBrokerOverrideWarningMaps
   onClose: () => void
 }
 
-export function TradeDetailModal({ trade, userId, onClose }: TradeDetailModalProps) {
+export function TradeDetailModal({ trade, userId, manualOverrideWarningMaps, onClose }: TradeDetailModalProps) {
   const t = useT()
   const assistant = useAssistant()
   const tr = t.trades
@@ -121,10 +128,20 @@ export function TradeDetailModal({ trade, userId, onClose }: TradeDetailModalPro
 
   const linkedSignalId = context?.signal?.id
 
+  const manualOverrideWarning = useMemo(() => {
+    if (!trade || !manualOverrideWarningMaps) return null
+    return getManualBrokerOverrideWarningForTrade(manualOverrideWarningMaps, trade, linkedSignalId)
+  }, [manualOverrideWarningMaps, trade, linkedSignalId])
+
   const handleManage = () => {
     if (!linkedSignalId) return
     onClose()
     navigate(`/manage-signals?edit=${linkedSignalId}`)
+  }
+
+  const handleWarningManage = () => {
+    onClose()
+    navigate(manualOverrideWarning?.actionUrl || manualOverrideManageSignalUrl(linkedSignalId))
   }
 
   const handleViewCopierLogs = () => {
@@ -301,6 +318,13 @@ export function TradeDetailModal({ trade, userId, onClose }: TradeDetailModalPro
               </div>
             </dl>
           </section>
+
+          {manualOverrideWarning ? (
+            <ManualBrokerOverrideWarningNotice
+              warning={manualOverrideWarning}
+              onManageSignal={handleWarningManage}
+            />
+          ) : null}
 
           {brokerFailures.length > 0 ? (
             <section className="rounded-xl border border-error-200 dark:border-error-900/60 bg-error-50/60 dark:bg-error-950/20 p-4 space-y-2.5">

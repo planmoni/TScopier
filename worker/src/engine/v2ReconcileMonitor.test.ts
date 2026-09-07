@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildDesiredLegTargets, closestLadderTp } from './v2ReconcileMonitor'
+import { V2ReconcileMonitor, buildDesiredLegTargets, closestLadderTp } from './v2ReconcileMonitor'
 import type { FxOpenOrder } from './fxContract'
 import type { BasketOpenLeg } from '../basketSlTpReconcile'
 
@@ -243,5 +243,234 @@ describe('buildDesiredLegTargets', () => {
       basketTargetSource: 'adjust',
     })
     assert.equal(t[0]!.takeProfit, 4063)
+  })
+})
+
+type InsertRow = { table: string; payload: Record<string, unknown> }
+
+function makeV2Supabase(opts: {
+  legs: BasketOpenLeg[]
+  targetSl?: number | null
+  targetTps?: number[] | null
+  existingNotifications?: Array<{ request_payload?: Record<string, unknown> | null; created_at?: string | null }>
+}) {
+  const inserts: InsertRow[] = []
+  const anchor = {
+    parsed_data: { sl: opts.targetSl ?? null, tp: opts.targetTps ?? [] },
+    channel_id: null,
+    user_id: 'user-1',
+    created_at: '2026-09-07T10:00:00.000Z',
+    user_override: null,
+  }
+  const target = opts.targetSl != null || opts.targetTps != null
+    ? {
+        stoploss: opts.targetSl ?? null,
+        tp_levels: opts.targetTps ?? [],
+        source: 'entry',
+        updated_at: '2026-09-07T10:00:00.000Z',
+        instruction_at: '2026-09-07T10:00:00.000Z',
+      }
+    : null
+
+  function builder(table: string) {
+    let selected = ''
+    const b: Record<string, unknown> = {}
+    b.select = (value: string) => { selected = value; return b }
+    b.eq = () => b
+    b.gte = () => b
+    b.order = () => b
+    b.limit = () => {
+      if (table === 'trades') return Promise.resolve({ data: opts.legs, error: null })
+      if (table === 'trade_execution_logs') return Promise.resolve({ data: opts.existingNotifications ?? [], error: null })
+      return Promise.resolve({ data: [], error: null })
+    }
+    b.maybeSingle = () => {
+      if (table === 'signals' && selected.includes('user_override')) return Promise.resolve({ data: { user_override: null }, error: null })
+      if (table === 'signals') return Promise.resolve({ data: anchor, error: null })
+      if (table === 'basket_sl_tp_targets') return Promise.resolve({ data: target, error: null })
+      return Promise.resolve({ data: null, error: null })
+    }
+    b.insert = (payload: Record<string, unknown>) => {
+      inserts.push({ table, payload })
+      return Promise.resolve({ data: null, error: null })
+    }
+    return b
+  }
+
+  return { supabase: { from: (table: string) => builder(table) }, inserts }
+}
+
+function okModifyResult(ticket: number) {
+  return { ok: true, partial: false, retcode: 10009, retcodeName: 'DONE', message: 'Done', ticket, order: ticket, deal: ticket, volume: null, price: null, bid: null, ask: null, comment: null, raw: null }
+}
+
+function failModifyResult(ticket: number) {
+  return { ok: false, partial: false, retcode: 10030, retcodeName: 'REJECT', message: 'Rejected', ticket, order: null, deal: null, volume: null, price: null, bid: null, ask: null, comment: null, raw: null }
+}
+
+async function runV2Reconcile(opts: {
+  legs: BasketOpenLeg[]
+  snapshot: FxOpenOrder[]
+  targetSl?: number | null
+  targetTps?: number[] | null
+  modifyOk?: boolean
+  existingNotifications?: Array<{ request_payload?: Record<string, unknown> | null; created_at?: string | null }>
+}) {
+  const { supabase, inserts } = makeV2Supabase(opts)
+  const modifyCalls: Array<Record<string, unknown>> = []
+  const fx = {
+    async openedOrders() { return opts.snapshot },
+    async orderModify(_accountId: string, _platform: string, req: Record<string, unknown>) {
+      modifyCalls.push(req)
+      const ticket = Number(req.ticket)
+      return opts.modifyOk === false ? failModifyResult(ticket) : okModifyResult(ticket)
+    },
+  }
+  const oldUrl = process.env.SUPABASE_URL
+  const oldKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const fetchCalls: Array<{ url: string; body: unknown }> = []
+  process.env.SUPABASE_URL = 'https://example.supabase.co'
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key'
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null })
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const monitor = new V2ReconcileMonitor(supabase as never, fx as never)
+    const result = await (monitor as unknown as {
+      reconcileBasket: (basket: { brokerAccountId: string; anchorSignalId: string; symbol: string; isBuy: boolean }, session: { uuid: string; platform: 'MT5'; userId: string }) => Promise<{ modified: number; closed: number }>
+    }).reconcileBasket(
+      { brokerAccountId: 'broker-1', anchorSignalId: 'signal-1', symbol: 'XAUUSD', isBuy: true },
+      { uuid: 'acct-1', platform: 'MT5', userId: 'user-1' },
+    )
+    return { result, inserts, modifyCalls, fetchCalls }
+  } finally {
+    if (oldUrl === undefined) delete process.env.SUPABASE_URL
+    else process.env.SUPABASE_URL = oldUrl
+    if (oldKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = oldKey
+  }
+}
+
+function manualOverrideEvents(inserts: InsertRow[]) {
+  return inserts.filter(row => row.table === 'trade_execution_logs' && row.payload.action === 'broker_manual_stop_override_reverted')
+}
+
+describe('V2ReconcileMonitor manual broker override notifications', () => {
+  it('detects a manual SL override and emits after successful restore', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: 4050, takeProfit: 4089 })],
+      targetSl: 4065,
+      targetTps: [4089],
+    })
+
+    assert.equal(out.result.modified, 1)
+    assert.equal(manualOverrideEvents(out.inserts).length, 1)
+    const payload = manualOverrideEvents(out.inserts)[0]!.payload.request_payload as Record<string, unknown>
+    assert.deepEqual(payload.changed_sides, ['sl'])
+    assert.deepEqual(payload.restored_trade_ids, ['trade-1'])
+    assert.equal(out.fetchCalls.length, 1)
+  })
+
+  it('detects a manual TP override and emits after successful restore', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: 4065, takeProfit: 4099 })],
+      targetSl: 4065,
+      targetTps: [4089],
+    })
+
+    assert.equal(out.result.modified, 1)
+    assert.equal(manualOverrideEvents(out.inserts).length, 1)
+    const payload = manualOverrideEvents(out.inserts)[0]!.payload.request_payload as Record<string, unknown>
+    assert.deepEqual(payload.changed_sides, ['tp'])
+  })
+
+  it('coalesces simultaneous SL and TP overrides into one event', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: 4050, takeProfit: 4099 })],
+      targetSl: 4065,
+      targetTps: [4089],
+    })
+
+    assert.equal(manualOverrideEvents(out.inserts).length, 1)
+    const payload = manualOverrideEvents(out.inserts)[0]!.payload.request_payload as Record<string, unknown>
+    assert.deepEqual(payload.changed_sides, ['sl', 'tp'])
+  })
+
+  it('coalesces multiple restored legs into one logical incident', async () => {
+    const out = await runV2Reconcile({
+      legs: [
+        leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 }),
+        leg({ id: 'trade-2', metaapi_order_id: '101', sl: 4065, tp: 4095 }),
+      ],
+      snapshot: [
+        open(100, { stopLoss: 4050, takeProfit: 4089 }),
+        open(101, { stopLoss: 4055, takeProfit: 4095 }),
+      ],
+      targetSl: 4065,
+      targetTps: [4089, 4095],
+    })
+
+    assert.equal(out.result.modified, 2)
+    assert.equal(manualOverrideEvents(out.inserts).length, 1)
+    const payload = manualOverrideEvents(out.inserts)[0]!.payload.request_payload as Record<string, unknown>
+    assert.deepEqual(payload.restored_trade_ids, ['trade-1', 'trade-2'])
+    assert.equal(out.fetchCalls.length, 1)
+  })
+
+  it('does not emit for zero/missing broker protection recovery', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: null, takeProfit: null })],
+      targetSl: 4065,
+      targetTps: [4089],
+    })
+
+    assert.equal(out.result.modified, 1)
+    assert.equal(manualOverrideEvents(out.inserts).length, 0)
+    assert.equal(out.fetchCalls.length, 0)
+  })
+
+  it('does not emit for a TScopier target change while DB is not yet at the desired target', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: 4065, takeProfit: 4089 })],
+      targetSl: 4050,
+      targetTps: [4089],
+    })
+
+    assert.equal(out.result.modified, 1)
+    assert.equal(manualOverrideEvents(out.inserts).length, 0)
+    assert.equal(out.fetchCalls.length, 0)
+  })
+  it('does not emit when OrderModify fails', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: 4050, takeProfit: 4089 })],
+      targetSl: 4065,
+      targetTps: [4089],
+      modifyOk: false,
+    })
+
+    assert.equal(out.result.modified, 0)
+    assert.equal(manualOverrideEvents(out.inserts).length, 0)
+    assert.equal(out.fetchCalls.length, 0)
+  })
+
+  it('does not emit for no-op reconcile ticks', async () => {
+    const out = await runV2Reconcile({
+      legs: [leg({ id: 'trade-1', metaapi_order_id: '100', sl: 4065, tp: 4089 })],
+      snapshot: [open(100, { stopLoss: 4065, takeProfit: 4089 })],
+      targetSl: 4065,
+      targetTps: [4089],
+    })
+
+    assert.equal(out.result.modified, 0)
+    assert.equal(out.modifyCalls.length, 0)
+    assert.equal(manualOverrideEvents(out.inserts).length, 0)
+    assert.equal(out.fetchCalls.length, 0)
   })
 })

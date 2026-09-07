@@ -78,6 +78,7 @@ describe('applyReconcileActions', () => {
       { modifies: [{ ticket: 1, stoploss: 4090, takeProfit: 4083 }], adopt: [], closedTickets: [] },
     )
     assert.equal(res.modified, 1)
+    assert.deepEqual(res.modifiedTickets, [1])
     assert.equal(calls.length, 2, 'combined then SL-only')
     assert.equal(calls[1]!.takeProfit, undefined)
   })
@@ -92,6 +93,7 @@ describe('applyReconcileActions', () => {
     )
     assert.deepEqual(closed, [9])
     assert.deepEqual(adopted, [77])
+    assert.deepEqual(res.modifiedTickets, [])
     assert.equal(res.closed, 1)
     assert.equal(res.adopted, 1)
   })

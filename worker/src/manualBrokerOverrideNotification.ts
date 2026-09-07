@@ -5,6 +5,8 @@ import type { BasketOpenLeg, BasketReconcileJobRow } from './basketSlTpReconcile
 import { readBrokerOrderStopLoss, readBrokerOrderTakeProfit } from './signalEntryPendingHelpers'
 
 export const MANUAL_BROKER_OVERRIDE_REVERTED_ACTION = 'broker_manual_stop_override_reverted'
+export const PASSIVE_DRIFT_SWEEP_ORIGIN = 'passive_drift_sweep'
+const LOG_PREFIX = '[MANUAL_OVERRIDE_NOTIFY]'
 const DEFAULT_DEDUPE_MS = 15 * 60_000
 
 export type ManualBrokerStopOverride = {
@@ -17,6 +19,30 @@ export type ManualBrokerStopOverride = {
   changedSides: Array<'sl' | 'tp'>
 }
 
+export type ManualBrokerOverrideRejectReason =
+  | 'empty_family_trades'
+  | 'empty_per_leg_targets'
+  | 'empty_broker_orders'
+  | 'db_not_managed_targets'
+  | 'missing_leg_target'
+  | 'missing_valid_ticket'
+  | 'broker_order_missing'
+  | 'target_has_no_positive_stop'
+  | 'broker_stops_empty_or_zero'
+  | 'broker_matches_target'
+
+export type ManualBrokerOverrideDetectionSkip = {
+  reason: ManualBrokerOverrideRejectReason
+  tradeId?: string
+  ticket?: number
+}
+
+export type ManualBrokerOverrideDetectionResult = {
+  overrides: ManualBrokerStopOverride[]
+  rejectedReasons: ManualBrokerOverrideDetectionSkip[]
+  dbAlreadyManaged: boolean
+}
+
 function approxEq(a: number | null, b: number | null): boolean {
   if (a == null || b == null) return false
   return Math.abs(a - b) <= 1e-6
@@ -25,7 +51,9 @@ function approxEq(a: number | null, b: number | null): boolean {
 function positive(v: unknown): number | null {
   const n = typeof v === 'number' ? v : Number(v)
   return Number.isFinite(n) && n > 0 ? n : null
-}function legDbMatchesTarget(
+}
+
+function legDbMatchesTarget(
   leg: BasketOpenLeg,
   target: PerLegStopTarget,
   nImmCwe: number,
@@ -76,21 +104,44 @@ export function manageSignalPath(signalId: string | null | undefined): string {
   return id ? `/manage-signals?edit=${encodeURIComponent(id)}` : '/manage-signals'
 }
 
-export function isDriftSweepReconcileJob(job: Pick<BasketReconcileJobRow, 'last_error' | 'source_signal_id' | 'anchor_signal_id'>): boolean {
-  return job.source_signal_id === job.anchor_signal_id
-    && String(job.last_error ?? '').toLowerCase().startsWith('drift sweep:')
+function readsPassiveDriftSweepOrigin(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  return String((raw as Record<string, unknown>).reconcile_origin ?? '') === PASSIVE_DRIFT_SWEEP_ORIGIN
 }
 
-export function detectManualBrokerStopOverrides(args: {
+export function passiveDriftSweepSnapshot(): Record<string, string> {
+  return { reconcile_origin: PASSIVE_DRIFT_SWEEP_ORIGIN }
+}
+
+export function isDriftSweepReconcileJob(
+  job: Pick<BasketReconcileJobRow, 'last_error' | 'source_signal_id' | 'anchor_signal_id' | 'virtual_pendings_snapshot'>,
+): boolean {
+  return job.source_signal_id === job.anchor_signal_id
+    && (
+      readsPassiveDriftSweepOrigin(job.virtual_pendings_snapshot)
+      || String(job.last_error ?? '').toLowerCase().startsWith('drift sweep:')
+    )
+}
+
+export function detectManualBrokerStopOverridesDetailed(args: {
   familyTrades: BasketOpenLeg[]
   perLegTargets: PerLegStopTarget[]
   ordersByTicket: Map<number, unknown>
   nImmCwe: number
   effectiveStoploss?: number
   tpFrozen?: boolean
-}): ManualBrokerStopOverride[] {
+}): ManualBrokerOverrideDetectionResult {
   const { familyTrades, perLegTargets, ordersByTicket, nImmCwe } = args
-  if (!familyTrades.length || !perLegTargets.length || !ordersByTicket.size) return []
+  const rejectedReasons: ManualBrokerOverrideDetectionSkip[] = []
+  if (!familyTrades.length) {
+    return { overrides: [], rejectedReasons: [{ reason: 'empty_family_trades' }], dbAlreadyManaged: false }
+  }
+  if (!perLegTargets.length) {
+    return { overrides: [], rejectedReasons: [{ reason: 'empty_per_leg_targets' }], dbAlreadyManaged: false }
+  }
+  if (!ordersByTicket.size) {
+    return { overrides: [], rejectedReasons: [{ reason: 'empty_broker_orders' }], dbAlreadyManaged: false }
+  }
 
   const dbAlreadyManaged = basketDbMatchesTargets({
     familyTrades,
@@ -99,7 +150,9 @@ export function detectManualBrokerStopOverrides(args: {
     effectiveStoploss: args.effectiveStoploss,
     tpFrozen: args.tpFrozen,
   })
-  if (!dbAlreadyManaged) return []
+  if (!dbAlreadyManaged) {
+    return { overrides: [], rejectedReasons: [{ reason: 'db_not_managed_targets' }], dbAlreadyManaged: false }
+  }
 
   const expanded = expandPerLegTargetsToCount({
     targets: perLegTargets,
@@ -112,22 +165,42 @@ export function detectManualBrokerStopOverrides(args: {
   for (let i = 0; i < familyTrades.length; i++) {
     const tr = familyTrades[i]!
     const target = expanded[i]
-    if (!target) continue
+    if (!target) {
+      rejectedReasons.push({ reason: 'missing_leg_target', tradeId: tr.id })
+      continue
+    }
 
     const ticket = Number(tr.metaapi_order_id)
-    if (!Number.isFinite(ticket) || ticket <= 0) continue
+    if (!Number.isFinite(ticket) || ticket <= 0) {
+      rejectedReasons.push({ reason: 'missing_valid_ticket', tradeId: tr.id })
+      continue
+    }
     const raw = ordersByTicket.get(ticket)
-    if (!raw) continue
+    if (!raw) {
+      rejectedReasons.push({ reason: 'broker_order_missing', tradeId: tr.id, ticket })
+      continue
+    }
 
     const targetSl = positive(args.effectiveStoploss) ?? positive(target.stoploss)
-    const targetTp = positive(target.takeprofit)
+    const targetTp = args.tpFrozen === true || i < nImmCwe ? null : positive(target.takeprofit)
     const brokerSl = readBrokerOrderStopLoss(raw)
     const brokerTp = readBrokerOrderTakeProfit(raw)
     const changedSides: Array<'sl' | 'tp'> = []
 
+    if (targetSl == null && targetTp == null) {
+      rejectedReasons.push({ reason: 'target_has_no_positive_stop', tradeId: tr.id, ticket })
+      continue
+    }
     if (targetSl != null && brokerSl != null && !approxEq(brokerSl, targetSl)) changedSides.push('sl')
     if (targetTp != null && brokerTp != null && !approxEq(brokerTp, targetTp)) changedSides.push('tp')
-    if (!changedSides.length) continue
+    if (!changedSides.length) {
+      rejectedReasons.push({
+        reason: brokerSl == null && brokerTp == null ? 'broker_stops_empty_or_zero' : 'broker_matches_target',
+        tradeId: tr.id,
+        ticket,
+      })
+      continue
+    }
 
     out.push({
       tradeId: tr.id,
@@ -139,7 +212,18 @@ export function detectManualBrokerStopOverrides(args: {
       changedSides,
     })
   }
-  return out
+  return { overrides: out, rejectedReasons, dbAlreadyManaged }
+}
+
+export function detectManualBrokerStopOverrides(args: {
+  familyTrades: BasketOpenLeg[]
+  perLegTargets: PerLegStopTarget[]
+  ordersByTicket: Map<number, unknown>
+  nImmCwe: number
+  effectiveStoploss?: number
+  tpFrozen?: boolean
+}): ManualBrokerStopOverride[] {
+  return detectManualBrokerStopOverridesDetailed(args).overrides
 }
 
 export function manualOverrideDedupeMs(): number {
@@ -171,7 +255,7 @@ async function recentlyNotified(args: {
     .limit(10)
 
   if (error) {
-    console.warn(`[manualBrokerOverrideNotification] dedupe lookup failed: ${error.message}`)
+    console.warn(`${LOG_PREFIX} dedupe_lookup_failed signal=${args.anchorSignalId} broker=${args.brokerAccountId} symbol=${args.symbol}: ${error.message}`)
     return true
   }
 
@@ -232,9 +316,15 @@ export async function notifyManualBrokerOverrideReverted(args: {
   nowMs?: number
 }): Promise<boolean> {
   const restored = args.overrides.filter(o => args.restoredTradeIds.includes(o.tradeId))
-  if (!restored.length) return false
+  if (!restored.length) {
+    console.log(`${LOG_PREFIX} skipped reason=no_restored_override_trade job=${args.reconcileJobId} signal=${args.anchorSignalId} broker=${args.brokerAccountId} symbol=${args.symbol}`)
+    return false
+  }
 
-  if (await recentlyNotified(args)) return false
+  if (await recentlyNotified(args)) {
+    console.log(`${LOG_PREFIX} skipped reason=dedupe_suppression job=${args.reconcileJobId} signal=${args.anchorSignalId} broker=${args.brokerAccountId} symbol=${args.symbol}`)
+    return false
+  }
 
   const changedSides = [...new Set(restored.flatMap(o => o.changedSides))].sort() as Array<'sl' | 'tp'>
   const path = manageSignalPath(args.anchorSignalId)
@@ -264,9 +354,12 @@ export async function notifyManualBrokerOverrideReverted(args: {
     request_payload: payload as unknown as Record<string, unknown>,
   })
   if (error) {
-    console.warn(`[manualBrokerOverrideNotification] in-app log insert failed: ${error.message}`)
+    console.warn(`${LOG_PREFIX} insert_failed job=${args.reconcileJobId} signal=${args.anchorSignalId} broker=${args.brokerAccountId} symbol=${args.symbol}: ${error.message}`)
     return false
   }
+
+
+  console.log(`${LOG_PREFIX} emitted job=${args.reconcileJobId} signal=${args.anchorSignalId} broker=${args.brokerAccountId} symbol=${args.symbol} restored=${restored.length} sides=${changedSides.join(',')}`)
 
   sendManualBrokerOverrideEmail({
     userId: args.userId,
