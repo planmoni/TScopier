@@ -7,6 +7,7 @@ export const tradeNotificationsJa: TradeNotificationsTranslations = {
     layeringCompleted: 'レイヤリングが完了しました',
     tradesClosed: '一部の取引が決済されました',
     reviewRequired: '承認待ちのシグナル',
+    manualOverrideReverted: 'Manual trade changes were reverted',
   },
   bodies: {
     executionBatch: '{channel}から{broker}で{side}の取引が{count}件新規建玉されました。',
@@ -24,6 +25,7 @@ export const tradeNotificationsJa: TradeNotificationsTranslations = {
     tradesClosedGeneric: '{channel}から{broker}で{count}件の取引が決済されました。',
     tradesClosedSingle: '{channel}から{broker}で取引が1件決済されました。',
     reviewRequired: '{channel}からのシグナルが承認待ちです。',
+    manualOverrideReverted: 'TScopier detected a manual SL/TP change made directly on your broker account and restored the signal managed values. To change SL or TP for a copied signal, use Manage Signal in TScopier.',
   },
   sides: {
     buy: '買い',
@@ -33,6 +35,9 @@ export const tradeNotificationsJa: TradeNotificationsTranslations = {
   fallbacks: {
     broker: 'あなたの口座',
     channel: 'あなたのチャンネル',
+  },
+  actions: {
+    manageSignal: 'Manage Signal',
   },
   tpReason: 'TP{index}',
 }

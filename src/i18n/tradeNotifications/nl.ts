@@ -7,6 +7,7 @@ export const tradeNotificationsNl: TradeNotificationsTranslations = {
     layeringCompleted: 'LAYERING VOLTOOID',
     tradesClosed: 'SOMMIGE TRADES GESLOTEN',
     reviewRequired: 'SIGNAAL WACHT OP GOEDKEURING',
+    manualOverrideReverted: 'Manual trade changes were reverted',
   },
   bodies: {
     executionBatch: 'Er zijn {count} {side}-trades geopend in {broker} vanuit {channel}.',
@@ -25,6 +26,7 @@ export const tradeNotificationsNl: TradeNotificationsTranslations = {
     tradesClosedGeneric: '{count} trades zijn gesloten in {broker} vanuit {channel}.',
     tradesClosedSingle: 'Een trade is gesloten in {broker} vanuit {channel}.',
     reviewRequired: 'Een signaal van {channel} wacht op uw goedkeuring.',
+    manualOverrideReverted: 'TScopier detected a manual SL/TP change made directly on your broker account and restored the signal managed values. To change SL or TP for a copied signal, use Manage Signal in TScopier.',
   },
   sides: {
     buy: 'koop',
@@ -34,6 +36,9 @@ export const tradeNotificationsNl: TradeNotificationsTranslations = {
   fallbacks: {
     broker: 'je account',
     channel: 'je kanaal',
+  },
+  actions: {
+    manageSignal: 'Manage Signal',
   },
   tpReason: 'TP{index}',
 }
