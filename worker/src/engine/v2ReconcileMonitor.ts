@@ -39,8 +39,14 @@ import { brokerSessionUuid } from '../tradeExecutor/helpers'
 import { hasFxsocketConfigured } from '../fxsocketClient'
 import { purgeRangePendingLegsForBaskets } from '../rangePendingLegDelete'
 import { isV2 } from './executionMode'
+import type { PerLegStopTarget } from '../multiTradeMerge'
+import {
+  detectManualBrokerStopOverridesDetailed,
+  notifyManualBrokerOverrideReverted,
+} from '../manualBrokerOverrideNotification'
 
 const TICK_MS = Math.min(60_000, Math.max(1_000, Number(process.env.V2_RECONCILE_TICK_MS ?? 4_000)))
+const MANUAL_OVERRIDE_LOG_PREFIX = '[MANUAL_OVERRIDE_NOTIFY]'
 
 function legTicket(leg: BasketOpenLeg): number | null {
   const t = Number(leg.metaapi_order_id)
@@ -204,6 +210,21 @@ type BasketKey = { brokerAccountId: string; anchorSignalId: string; symbol: stri
 
 type BrokerSession = { uuid: string; platform: MtPlatform; userId: string | null }
 
+function perLegTargetsForManualOverrideDetection(
+  legs: BasketOpenLeg[],
+  desiredTargets: DesiredLegTarget[],
+): PerLegStopTarget[] {
+  const desiredByTicket = new Map(desiredTargets.map(t => [t.ticket, t]))
+  return legs.map(leg => {
+    const ticket = legTicket(leg)
+    const desired = ticket == null ? null : desiredByTicket.get(ticket)
+    return {
+      stoploss: desired?.stoploss ?? 0,
+      takeprofit: desired?.takeProfit ?? 0,
+    }
+  })
+}
+
 /** The single management-first reconcile loop for v2 brokers. */
 export class V2ReconcileMonitor {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -351,6 +372,22 @@ export class V2ReconcileMonitor {
     const orphanCount = actions.adopt.length
     actions.adopt = []
 
+    const manualBrokerOverrideDetection = actions.modifies.length > 0
+      ? detectManualBrokerStopOverridesDetailed({
+          familyTrades: legs,
+          perLegTargets: perLegTargetsForManualOverrideDetection(legs, desiredTargets),
+          ordersByTicket: new Map(snapshot.map(order => [order.ticket, order])),
+          nImmCwe: 0,
+        })
+      : null
+    if (manualBrokerOverrideDetection) {
+      if (manualBrokerOverrideDetection.overrides.length > 0) {
+        console.log(`${MANUAL_OVERRIDE_LOG_PREFIX} v2 candidate signal=${basket.anchorSignalId} broker=${basket.brokerAccountId} symbol=${basket.symbol} overrides=${manualBrokerOverrideDetection.overrides.length}`)
+      } else {
+        const reasons = [...new Set(manualBrokerOverrideDetection.rejectedReasons.map(r => r.reason))].join(',') || 'none'
+        console.log(`${MANUAL_OVERRIDE_LOG_PREFIX} v2 skipped signal=${basket.anchorSignalId} broker=${basket.brokerAccountId} symbol=${basket.symbol} reason=${reasons}`)
+      }
+    }
     // SAFETY: never mass-close a basket off an empty snapshot. A disconnected
     // FxSocket session can return an empty (but successful) OpenedOrders list; that
     // must not be read as "all legs closed". Only honor closes when the snapshot
@@ -388,8 +425,40 @@ export class V2ReconcileMonitor {
       )
     }
 
+    const successfulModifiedTickets = new Set(result.modifiedTickets)
+    const restoredManualBrokerOverrides = (manualBrokerOverrideDetection?.overrides ?? [])
+      .filter(override => successfulModifiedTickets.has(override.ticket))
+    if ((manualBrokerOverrideDetection?.overrides.length ?? 0) > 0 && restoredManualBrokerOverrides.length === 0) {
+      console.log(`${MANUAL_OVERRIDE_LOG_PREFIX} v2 skipped signal=${basket.anchorSignalId} broker=${basket.brokerAccountId} symbol=${basket.symbol} reason=no_successful_restore modified=${result.modified} failed=${result.modifyFailed}`)
+    }
+    if (restoredManualBrokerOverrides.length > 0) {
+      const userId = (anchorSig as { user_id?: string } | null)?.user_id ?? session.userId
+      if (!userId) {
+        console.log(`${MANUAL_OVERRIDE_LOG_PREFIX} v2 skipped signal=${basket.anchorSignalId} broker=${basket.brokerAccountId} symbol=${basket.symbol} reason=no_user`)
+      } else {
+        const emitted = await notifyManualBrokerOverrideReverted({
+          supabase: this.supabase,
+          userId,
+          brokerAccountId: basket.brokerAccountId,
+          anchorSignalId: basket.anchorSignalId,
+          sourceSignalId: basket.anchorSignalId,
+          channelId: (anchorSig as { channel_id?: string | null } | null)?.channel_id ?? null,
+          symbol: basket.symbol,
+          direction: basket.isBuy ? 'buy' : 'sell',
+          overrides: restoredManualBrokerOverrides,
+          reconcileJobId: `v2:${basket.brokerAccountId}:${basket.anchorSignalId}:${basket.symbol}`,
+          restoredTradeIds: restoredManualBrokerOverrides.map(override => override.tradeId),
+        })
+        if (emitted) {
+          console.log(`${MANUAL_OVERRIDE_LOG_PREFIX} v2 emitted signal=${basket.anchorSignalId} broker=${basket.brokerAccountId} symbol=${basket.symbol} restored=${restoredManualBrokerOverrides.length}`)
+        }
+      }
+    }
+
     if (result.modified > 0 || result.closed > 0 || result.modifyFailed > 0 || orphanCount > 0) {
-      await this.logTick(basket, session.userId, { ...result, legs: legs.length, orphanCount })
+      const logResult: Record<string, unknown> = { ...result }
+      delete logResult.modifiedTickets
+      await this.logTick(basket, session.userId, { ...logResult, legs: legs.length, orphanCount })
     }
     return { modified: result.modified, closed: result.closed }
   }

@@ -28,7 +28,7 @@ import { brokerSessionUuid } from './tradeExecutor/helpers'
 import { isV2 } from './engine/executionMode'
 import { isExplicitBasketSlSource } from './basketEffectiveStops'
 import {
-  detectManualBrokerStopOverrides,
+  detectManualBrokerStopOverridesDetailed,
   isDriftSweepReconcileJob,
   notifyManualBrokerOverrideReverted,
 } from './manualBrokerOverrideNotification'
@@ -261,6 +261,7 @@ export class BasketSlTpReconcileMonitor {
       signalTps: freshSignalTps,
       effectiveStoploss,
       effectiveSlSource,
+      tpFrozen,
     } = await resolveFreshTargetsForJob(
       this.supabase,
       row,
@@ -297,15 +298,28 @@ export class BasketSlTpReconcileMonitor {
 
     const preModifyOrdersByTicket = await fetchBrokerOrdersByTicket(api, uuid)
     const openedTickets = new Set(preModifyOrdersByTicket.keys())
-    const manualBrokerOverrides = isDriftSweepReconcileJob(row)
-      ? detectManualBrokerStopOverrides({
+    const driftSweepJob = isDriftSweepReconcileJob(row)
+    const manualBrokerOverrideDetection = driftSweepJob
+      ? detectManualBrokerStopOverridesDetailed({
           familyTrades,
           perLegTargets: effectiveTargets,
           ordersByTicket: preModifyOrdersByTicket,
           nImmCwe: row.n_imm_cwe ?? 0,
           effectiveStoploss: effectiveStoploss > 0 ? effectiveStoploss : undefined,
+          tpFrozen,
         })
-      : []
+      : null
+    const manualBrokerOverrides = manualBrokerOverrideDetection?.overrides ?? []
+    if (driftSweepJob) {
+      if (manualBrokerOverrides.length > 0) {
+        console.log(`[MANUAL_OVERRIDE_NOTIFY] candidate job=${row.id} signal=${row.anchor_signal_id} broker=${row.broker_account_id} symbol=${row.symbol} overrides=${manualBrokerOverrides.length}`)
+      } else {
+        const reasons = [...new Set((manualBrokerOverrideDetection?.rejectedReasons ?? []).map(r => r.reason))].join(',') || 'none'
+        console.log(`[MANUAL_OVERRIDE_NOTIFY] skipped job=${row.id} signal=${row.anchor_signal_id} broker=${row.broker_account_id} symbol=${row.symbol} reason=${reasons}`)
+      }
+    } else {
+      console.log(`[MANUAL_OVERRIDE_NOTIFY] skipped job=${row.id} signal=${row.anchor_signal_id} broker=${row.broker_account_id} symbol=${row.symbol} reason=not_passive_drift_sweep`)
+    }
     const baseLot = Number(broker.default_lot_size ?? 0.01)
     // One shared quote for the whole basket instead of one per leg.
     let sharedQuote: { bid: number; ask: number } | null = null
@@ -400,6 +414,9 @@ export class BasketSlTpReconcileMonitor {
           } as unknown as Record<string, unknown>,
         })
       } catch { /* best-effort */ }
+      if (manualBrokerOverrides.length > 0 && summary.modified <= summary.benignModify) {
+        console.log(`[MANUAL_OVERRIDE_NOTIFY] skipped job=${row.id} signal=${row.anchor_signal_id} broker=${row.broker_account_id} symbol=${row.symbol} reason=no_non_benign_restore modified=${summary.modified} benign=${summary.benignModify}`)
+      }
       if (manualBrokerOverrides.length > 0 && summary.modified > summary.benignModify) {
         await notifyManualBrokerOverrideReverted({
           supabase: this.supabase,

@@ -22,6 +22,15 @@ import {
   formatTradePrice,
   getTradeDisplayMeta,
 } from '../../lib/tradeDisplay'
+import { supabase } from '../../lib/supabase'
+import {
+  emptyManualBrokerOverrideWarningMaps,
+  fetchManualBrokerOverrideWarningsForTrades,
+  getManualBrokerOverrideWarningForTrade,
+  type ManualBrokerOverrideWarning,
+  type ManualBrokerOverrideWarningMaps,
+} from '../../lib/manualBrokerOverrideWarnings'
+import { ManualBrokerOverrideWarningBadge } from '../../components/trades/ManualBrokerOverrideWarning'
 
 type Filter = 'all' | 'open' | 'closed'
 
@@ -39,6 +48,7 @@ export function TradesPage() {
   const [pageSize, setPageSize] = useState<PageSizeOption>(10)
   const [selectedTrade, setSelectedTrade] = useState<MtTrade | null>(null)
   const [selectedReviewSignal, setSelectedReviewSignal] = useState<Signal | null>(null)
+  const [manualOverrideWarningMaps, setManualOverrideWarningMaps] = useState<ManualBrokerOverrideWarningMaps>(() => emptyManualBrokerOverrideWarningMaps())
   const deepLinkConsumedRef = useState(() => ({ current: false }))[0]
 
   useEffect(() => {
@@ -88,6 +98,22 @@ export function TradesPage() {
 
   const showInitialSkeleton = loading && trades.length === 0
 
+  const refreshManualOverrideWarnings = async () => {
+    if (!user?.id) {
+      setManualOverrideWarningMaps(emptyManualBrokerOverrideWarningMaps())
+      return
+    }
+    try {
+      setManualOverrideWarningMaps(await fetchManualBrokerOverrideWarningsForTrades(supabase, user.id))
+    } catch (err) {
+      console.warn(`[trades] manual broker override warnings failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  useEffect(() => {
+    void refreshManualOverrideWarnings()
+  }, [user?.id])
+
   return (
     <PageShell maxWidth="lg" spacing="none" className="space-y-6">
       <PageHeader
@@ -107,7 +133,7 @@ export function TradesPage() {
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
-            onClick={() => refresh()}
+            onClick={() => { void refresh(); void refreshManualOverrideWarnings() }}
             disabled={refreshing || showInitialSkeleton}
             className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm rounded-md font-medium border border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 disabled:opacity-50 w-full sm:w-auto"
           >
@@ -187,7 +213,12 @@ export function TradesPage() {
           <>
             <div className="md:hidden divide-y divide-neutral-100 dark:divide-neutral-800">
               {paginatedTrades.map(trade => (
-                <TradeCard key={trade.id} trade={trade} onSelect={() => setSelectedTrade(trade)} />
+                <TradeCard
+                  key={trade.id}
+                  trade={trade}
+                  warning={getManualBrokerOverrideWarningForTrade(manualOverrideWarningMaps, trade)}
+                  onSelect={() => setSelectedTrade(trade)}
+                />
               ))}
             </div>
             <div className="hidden md:block overflow-x-auto">
@@ -208,7 +239,12 @@ export function TradesPage() {
                 </thead>
                 <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                   {paginatedTrades.map(trade => (
-                    <TradeRow key={trade.id} trade={trade} onSelect={() => setSelectedTrade(trade)} />
+                    <TradeRow
+                      key={trade.id}
+                      trade={trade}
+                      warning={getManualBrokerOverrideWarningForTrade(manualOverrideWarningMaps, trade)}
+                      onSelect={() => setSelectedTrade(trade)}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -232,6 +268,7 @@ export function TradesPage() {
       <TradeDetailModal
         trade={selectedTrade}
         userId={user?.id}
+        manualOverrideWarningMaps={manualOverrideWarningMaps}
         onClose={() => setSelectedTrade(null)}
       />
 
@@ -359,7 +396,7 @@ function PageButton({ n, active, onClick }: { n: number; active: boolean; onClic
   )
 }
 
-function TradeCard({ trade, onSelect }: { trade: MtTrade; onSelect: () => void }) {
+function TradeCard({ trade, warning, onSelect }: { trade: MtTrade; warning: ManualBrokerOverrideWarning | null; onSelect: () => void }) {
   const t = useT()
   const tr = t.trades
   const { isBuy, isSell, profit, status, broker, directionLabel, timeLabel } = getTradeDisplayMeta(trade)
@@ -398,6 +435,10 @@ function TradeCard({ trade, onSelect }: { trade: MtTrade; onSelect: () => void }
         {directionLabel}
       </div>
 
+      {warning ? (
+        <div className="mb-3"><ManualBrokerOverrideWarningBadge /></div>
+      ) : null}
+
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
         <div>
           <dt className="text-neutral-400 uppercase tracking-wide">{tr.colBroker}</dt>
@@ -434,7 +475,7 @@ function TradeCard({ trade, onSelect }: { trade: MtTrade; onSelect: () => void }
   )
 }
 
-function TradeRow({ trade, onSelect }: { trade: MtTrade; onSelect: () => void }) {
+function TradeRow({ trade, warning, onSelect }: { trade: MtTrade; warning: ManualBrokerOverrideWarning | null; onSelect: () => void }) {
   const t = useT()
   const tr = t.trades
   const { isBuy, isSell, profit, status, broker, directionLabel, timeLabel } = getTradeDisplayMeta(trade)
@@ -489,7 +530,10 @@ function TradeRow({ trade, onSelect }: { trade: MtTrade; onSelect: () => void })
       </td>
       <td className="px-4 py-3.5 text-center">
         <span className="inline-flex justify-center items-center gap-1 w-full">
-          <Badge variant={status.variant} size="sm">{statusLabel}</Badge>
+          <span className="flex flex-col items-center gap-1">
+            <Badge variant={status.variant} size="sm">{statusLabel}</Badge>
+            {warning ? <ManualBrokerOverrideWarningBadge /> : null}
+          </span>
           <ChevronRightIcon className="w-3.5 h-3.5 text-neutral-300 opacity-0 group-hover:opacity-100 transition-opacity" aria-hidden />
         </span>
       </td>
