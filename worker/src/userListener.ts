@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { SupabaseClient } from '@supabase/supabase-js'
+import bigInt from 'big-integer'
 import { TelegramClient } from 'telegram'
 import { utils } from 'telegram'
 import { NewMessage } from 'telegram/events'
@@ -614,7 +615,7 @@ export class UserListener {
     tgInvoke(this.client, new Api.messages.SendMessage({
       peer: new Api.InputPeerSelf(),
       message,
-      randomId: BigInt(Date.now()),
+      randomId: bigInt(Date.now()),
     })).catch((err: unknown) => {
       console.warn(`[userListener] Telegram review notification failed id=${signalId}: ${err instanceof Error ? err.message : String(err)}`)
     })
@@ -2899,7 +2900,7 @@ export class UserListener {
     }
     if (aiMeta?.reviewRequired) {
       notifyHumanReviewEmail(signalId)
-      this.notifyHumanReviewTelegram(signalId, rawMessage, parseResult.parsed as Record<string, unknown>)
+      this.notifyHumanReviewTelegram(signalId, rawMessage, parseResult.parsed as unknown as Record<string, unknown>)
       void persistListenerEvent(this.supabase, {
         userId: this.userId,
         eventType: 'ai_parse_review_required',
