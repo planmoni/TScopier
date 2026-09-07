@@ -1,7 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { resolveEmailLogoUrl } from "../_shared/brandEmailAssets.ts";
-import { buildAuthEmailHtml } from "../_shared/authEmailLayout.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -17,14 +15,10 @@ const APP_URL = (Deno.env.get("VITE_APP_URL") || "https://app.tscopier.ai").repl
   /\/$/,
   "",
 );
-const LOGO_URL = resolveEmailLogoUrl({
-  supabaseUrl: SUPABASE_URL,
-  appUrl: APP_URL,
-  variant: "dark",
-  explicitUrl: Deno.env.get("EMAIL_LOGO_URL"),
-});
 const RESEND_FROM =
-  Deno.env.get("RESEND_CAMPAIGN_FROM") || "TScopier <noreply@tscopier.ai>";
+  Deno.env.get("SIGNAL_REVIEW_EMAIL_FROM") ||
+  Deno.env.get("RESEND_CAMPAIGN_FROM") ||
+  "TScopier <noreply@tscopier.ai>";
 
 /** Must match AI_REVIEW_MAX_AGE_MS in worker/src/retrySignal.ts. */
 const REVIEW_WINDOW_MS = 2 * 60_000;
@@ -174,21 +168,31 @@ Deno.serve(async (req: Request) => {
       ? `<p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#737373;background-color:#fafafa;border:1px solid #f0f0f0;border-radius:8px;padding:12px 16px;">${esc(rawMessage)}</p>`
       : ""
 
-    const html = buildAuthEmailHtml({
-      title: "Signal waiting for your approval",
-      greeting: `Hi ${profile?.first_name || profile?.display_name || "there"},`,
-      bodyHtml: `
-        <p style="margin:0 0 16px 0;">A signal needs your review before it can be sent to your broker.</p>
-        ${channelLine}
-        ${levelsHtml}
-        ${messageBlock}
-        <p style="margin:0;font-size:14px;line-height:1.6;color:#737373;">Your approval window is <strong>2 minutes</strong> from when the signal was received. After that, the signal is skipped automatically. You can still view it in the Trades tab.</p>
-      `,
-      buttonLabel: "Review signal",
-      buttonUrl: `${APP_URL}/account-trades?review=${signal_id}`,
-      footerNote: "You can turn off these emails in Settings → Notifications.",
-      logoUrl: LOGO_URL,
-    })
+    const reviewUrl = `${APP_URL}/account-trades?review=${signal_id}`
+    const greetName = profile?.first_name || profile?.display_name || "there"
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Signal review required</title>
+</head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background-color:#ffffff;">
+  <div style="max-width:480px;margin:0 auto;padding:32px 24px;">
+    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.5;color:#171717;">Hi ${esc(greetName)},</p>
+    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.5;color:#171717;">A signal needs your review before it can be sent to your broker.</p>
+    ${channelLine}
+    ${levelsHtml}
+    ${messageBlock}
+    <p style="margin:0 0 24px 0;font-size:14px;line-height:1.5;color:#404040;">Your approval window is <strong>2 minutes</strong> from when the signal was received. After that, the signal is skipped automatically.</p>
+    <p style="margin:0 0 24px 0;"><a href="${esc(reviewUrl)}" style="font-size:14px;font-weight:600;color:#0d9488;text-decoration:none;">Review signal &rarr;</a></p>
+    <p style="margin:0;font-size:13px;line-height:1.5;color:#a3a3a3;">You can turn off these emails in Settings &rarr; Notifications.</p>
+  </div>
+</body>
+</html>`
+
+    const unsubscribeUrl = `${APP_URL}/account-settings/notifications`
 
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -201,6 +205,11 @@ Deno.serve(async (req: Request) => {
         to: [email],
         subject: "TScopier: a signal is waiting for your approval",
         html,
+        headers: {
+          "List-Unsubscribe": `<${unsubscribeUrl}>`,
+          "X-Entity-Id": signal_id,
+        },
+        categories: ["transactional"],
       }),
     })
 

@@ -2,6 +2,25 @@
 
 ## Changelog
 
+### 2026-09-07 — signal-review-email: Telegram self-notification + Promotions tab fix attempt
+
+- **Plain English:** Users receiving "signal awaiting approval" emails were finding them in Gmail's Promotions tab instead of Primary. We added Telegram Saved Messages as a second notification channel (instant, no deliverability issues) and attempted to fix the email Promotions classification by adding `List-Unsubscribe` headers, a `categories: ["transactional"]` flag, and checking DNS authentication. The email was confirmed working (Resend accepted it, `email_campaign_log` row exists) — the issue was Gmail classification, not delivery.
+- **Root cause (technical):** Gmail's Promotions classifier uses sender reputation, email content patterns, and authentication signals. The `noreply@tscopier.ai` sender prefix is a known negative signal. SPF, DKIM, and DMARC were already correctly configured (`include:amazonses.com` was present). The real bottleneck is sender reputation — a new domain with limited send history and engagement naturally gets flagged.
+- **Fix (files):**
+  - `supabase/functions/signal-review-email/index.ts` — added `List-Unsubscribe` header, `X-Entity-Id` dedup header, `categories: ["transactional"]` to Resend API call; added `SIGNAL_REVIEW_EMAIL_FROM` env var fallback so the sender address can be changed without altering the shared `RESEND_CAMPAIGN_FROM`; removed unused `buildAuthEmailHtml` and `resolveEmailLogoUrl` imports (template was already inline from prior fix).
+  - `worker/src/userListener.ts` — added `notifyHumanReviewTelegram()` method to `UserListener` class; sends a plain-text message to the user's Saved Messages via MTProto (`Api.messages.SendMessage` with `InputPeerSelf`); includes signal details (symbol, action, entry, SL, TP, raw message) and a review link; fire-and-forget with error logging. Wired alongside `notifyHumanReviewEmail` at the `aiMeta.reviewRequired` call site.
+- **Design decisions:**
+  - Telegram self-notification uses the existing MTProto client (no bot needed). The worker already has the user's authenticated session — it just hadn't sent messages before.
+  - The `SIGNAL_REVIEW_EMAIL_FROM` env var allows per-function sender overrides without changing the shared `RESEND_CAMPAIGN_FROM` used by other email functions.
+  - Email template remains styled (not stripped to plain text) because signal details (symbol, action, entry, SL, TP) need to be readable. The Promotions issue is reputation-based, not content-based.
+- **DNS findings:** SPF record already included `include:amazonses.com`. Adding it again created a duplicate SPF record (RFC violation → `PermError`). The duplicate was removed. DKIM (`resend._domainkey.tscopier.ai`) and DMARC (`_dmarc.tscopier.ai`, `p=none`) were already correct.
+- **Deploy state:** Edge function deployed to staging (`axdcledcyhyvzrnfkwat`) and prod (`sxkpcovbyaficvtkpsdo`). Worker code merged into `staging` branch (not yet deployed — requires Railway deploy).
+- **Follow-ups:** 
+  1. Set `SIGNAL_REVIEW_EMAIL_FROM="TScopier <app@tscopier.ai>"` in Supabase Edge Function secrets on both projects (requires dashboard access).
+  2. Monitor whether the sender address change reduces Promotions placement.
+  3. Over time, sender reputation will build as more users engage with emails (move to Primary, open, click). This is the most reliable path out of Promotions.
+  4. Deploy worker to staging to enable Telegram self-notifications.
+
 ### 2026-09-03 — Copier setup banner: specific missing-item messaging below navbar
 
 - **Plain English:** When a user tries to start the copier but hasn't finished setting up their account, they now see an amber banner directly below the top navigation bar that tells them exactly what's missing — "link a broker", "connect Telegram", "add a channel" — with a link to the right page to fix it. Previously the copier toggle button just showed a generic disabled "Copier Stopped" message with no way to resolve it. The earlier "Fix setup" link on the toggle button itself was removed in favour of this more prominent, full-width banner approach. Two defects found during rollout were fixed: the banner initially crashed the whole page (blank screen), and then, after a stop-gap fix, it silently never appeared at all.

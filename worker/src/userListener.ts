@@ -9,12 +9,12 @@ import type { EditedMessageEvent } from 'telegram/events/EditedMessage'
 import { Api } from 'telegram/tl'
 import {
   buildClient,
+  tgInvoke,
   isAuthKeyDuplicated,
   isAuthKeyUnregistered,
   isMalformedRpcResult,
   rethrowIfSessionInvalid,
   TelegramSessionInvalidError,
-  tgInvoke,
 } from './telegramClient'
 import {
   authKeyDupDeferredRetryMs,
@@ -580,6 +580,43 @@ export class UserListener {
       ...opts,
       ownershipEpoch: this.healthOwnershipEpoch,
       leaseAcquiredAt: this.healthLeaseAcquiredAt,
+    })
+  }
+
+  /** Fire-and-forget: send a Telegram self-message (Saved Messages) for human review. */
+  private notifyHumanReviewTelegram(
+    signalId: string,
+    rawMessage: string,
+    parsed: Record<string, unknown>,
+  ): void {
+    const appUrl = process.env.APP_URL || 'https://app.tscopier.ai'
+    const reviewUrl = `${appUrl}/account-trades?review=${signalId}`
+
+    const symbol = String(parsed.symbol ?? '').trim()
+    const action = String(parsed.action ?? '').trim()
+    const entry = parsed.entry_price ?? parsed.entry_zone_low ?? ''
+    const sl = parsed.sl != null ? String(parsed.sl) : ''
+    const tp = Array.isArray(parsed.tp) && parsed.tp.length > 0 ? parsed.tp.join(', ') : ''
+
+    const lines: string[] = ['Signal review required', '']
+    if (symbol) lines.push(`Symbol: ${symbol}`)
+    if (action) lines.push(`Action: ${action}`)
+    if (entry) lines.push(`Entry: ${entry}`)
+    if (sl) lines.push(`SL: ${sl}`)
+    if (tp) lines.push(`TP: ${tp}`)
+    if (rawMessage) { lines.push(''); lines.push(rawMessage) }
+    lines.push('')
+    lines.push(`Review: ${reviewUrl}`)
+    lines.push('(Auto-expires in 2 minutes)')
+
+    const message = lines.join('\n')
+
+    tgInvoke(this.client, new Api.messages.SendMessage({
+      peer: new Api.InputPeerSelf(),
+      message,
+      randomId: BigInt(Date.now()),
+    })).catch((err: unknown) => {
+      console.warn(`[userListener] Telegram review notification failed id=${signalId}: ${err instanceof Error ? err.message : String(err)}`)
     })
   }
 
@@ -2862,6 +2899,7 @@ export class UserListener {
     }
     if (aiMeta?.reviewRequired) {
       notifyHumanReviewEmail(signalId)
+      this.notifyHumanReviewTelegram(signalId, rawMessage, parseResult.parsed as Record<string, unknown>)
       void persistListenerEvent(this.supabase, {
         userId: this.userId,
         eventType: 'ai_parse_review_required',
