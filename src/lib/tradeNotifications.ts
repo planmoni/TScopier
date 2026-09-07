@@ -11,6 +11,7 @@ export type TradeNotificationHeadline =
   | 'layering_completed'
   | 'trades_closed'
   | 'review_required'
+  | 'manual_override_reverted'
 
 export type TradeExecutionLogRow = ChannelWorkerLogRow & {
   id: string
@@ -34,6 +35,8 @@ export interface TradeNotificationEvent {
   newTp: number | null
   newTpLevels: number[]
   closeReason: string | null
+  actionUrl: string | null
+  actionLabel: string | null
 }
 
 export interface TradeNotification {
@@ -43,6 +46,8 @@ export interface TradeNotification {
   body: string
   symbol: string | null
   createdAt: string
+  actionUrl?: string | null
+  actionLabel?: string | null
 }
 
 export interface TradeNotificationContext {
@@ -64,6 +69,7 @@ const SIGNAL_MODIFY_ACTIONS = new Set([
 /** Automated monitors — logged for copier history but too noisy for the bell. */
 const AUTOMATED_MODIFY_ACTIONS = new Set(['trailing_stop', 'auto_be'])
 const MODIFY_LEG_ACTIONS = new Set([...SIGNAL_MODIFY_ACTIONS, ...AUTOMATED_MODIFY_ACTIONS])
+const MANUAL_OVERRIDE_ACTIONS = new Set(['broker_manual_stop_override_reverted'])
 const CLOSED_ACTIONS = new Set([
   'mgmt_close',
   'mgmt_close_worse_entries',
@@ -184,6 +190,7 @@ function classifyRow(row: TradeExecutionLogRow): TradeNotificationHeadline | nul
   if (SUPPRESSED_ACTIONS.has(action)) return null
   if (AUTOMATED_MODIFY_ACTIONS.has(action)) return null
   if (['attempt', 'failed', 'skipped'].includes(row.status.toLowerCase())) return null
+  if (MANUAL_OVERRIDE_ACTIONS.has(action)) return 'manual_override_reverted'
   if (EXECUTION_ACTIONS.has(action)) return 'execution_completed'
   if (LAYERING_ACTIONS.has(action)) return 'layering_completed'
   if (MODIFY_SUMMARY_ACTIONS.has(action) || SIGNAL_MODIFY_ACTIONS.has(action)) return 'modification_completed'
@@ -253,6 +260,8 @@ function createEvent(row: TradeExecutionLogRow, headline: TradeNotificationHeadl
     newTp,
     newTpLevels,
     closeReason,
+    actionUrl: typeof payload.manage_signal_url === 'string' ? payload.manage_signal_url : null,
+    actionLabel: typeof payload.cta_label === 'string' ? payload.cta_label : null,
   }
 }
 
@@ -275,6 +284,7 @@ export function aggregateTradeNotificationEvents(
   const layerBuckets = new Map<string, TradeNotificationEvent>()
   const modBuckets = new Map<string, TradeNotificationEvent>()
   const closeBuckets = new Map<string, TradeNotificationEvent>()
+  const manualOverrideBuckets = new Map<string, TradeNotificationEvent>()
 
   for (const row of sorted) {
     const headline = classifyRow(row)
@@ -330,6 +340,14 @@ export function aggregateTradeNotificationEvents(
       continue
     }
 
+    if (headline === 'manual_override_reverted') {
+      const payload = row.request_payload ?? {}
+      const anchor = typeof payload.anchor_signal_id === 'string' ? payload.anchor_signal_id : row.signal_id
+      const key = `${pairKey(anchor, row.broker_account_id)}:${String(payload.symbol ?? '').trim().toUpperCase()}`
+      if (!manualOverrideBuckets.has(key)) manualOverrideBuckets.set(key, createEvent(row, headline))
+      continue
+    }
+
     if (headline === 'trades_closed') {
       const pair = pairKey(row.signal_id, row.broker_account_id)
       const tpIdx = action === 'partial_tp_fired' ? num(row.request_payload?.tp_idx) : null
@@ -344,7 +362,7 @@ export function aggregateTradeNotificationEvents(
     }
   }
 
-  events.push(...execBuckets.values(), ...layerBuckets.values(), ...modBuckets.values(), ...closeBuckets.values())
+  events.push(...manualOverrideBuckets.values(), ...execBuckets.values(), ...layerBuckets.values(), ...modBuckets.values(), ...closeBuckets.values())
   return events.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
 }
 
@@ -471,6 +489,10 @@ export function formatHolisticNotification(
         body = interpolate(t.bodies.tradesClosedSingle, { broker, channel })
       }
       break
+    case 'manual_override_reverted':
+      title = t.headlines.manualOverrideReverted
+      body = t.bodies.manualOverrideReverted
+      break
     case 'review_required':
       // Review items are built directly via reviewNotificationFromSignal; this
       // branch exists only so the log-driven formatter stays exhaustive.
@@ -486,6 +508,8 @@ export function formatHolisticNotification(
     body,
     symbol: event.symbol,
     createdAt: event.createdAt,
+    actionUrl: event.actionUrl,
+    actionLabel: event.actionLabel ?? (event.actionUrl ? t.actions.manageSignal : null),
   }
 }
 
@@ -495,6 +519,7 @@ export const TRADE_NOTIFICATION_LOG_ACTIONS = [
   ...LAYERING_ACTIONS,
   ...MODIFY_SUMMARY_ACTIONS,
   ...SIGNAL_MODIFY_ACTIONS,
+  ...MANUAL_OVERRIDE_ACTIONS,
   ...CLOSED_ACTIONS,
 ] as const
 
@@ -535,6 +560,8 @@ export function reviewNotificationFromSignal(
     }),
     symbol,
     createdAt: signal.created_at,
+    actionUrl: '/account-trades',
+    actionLabel: null,
   }
 }
 

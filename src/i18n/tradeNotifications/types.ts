@@ -5,6 +5,7 @@ export interface TradeNotificationsTranslations {
     layeringCompleted: string
     tradesClosed: string
     reviewRequired: string
+    manualOverrideReverted: string
   }
   bodies: {
     executionBatch: string
@@ -22,6 +23,7 @@ export interface TradeNotificationsTranslations {
     tradesClosedGeneric: string
     tradesClosedSingle: string
     reviewRequired: string
+    manualOverrideReverted: string
   }
   sides: {
     buy: string
@@ -31,6 +33,9 @@ export interface TradeNotificationsTranslations {
   fallbacks: {
     broker: string
     channel: string
+  }
+  actions: {
+    manageSignal: string
   }
   tpReason: string
 }

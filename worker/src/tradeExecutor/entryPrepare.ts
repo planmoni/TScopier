@@ -34,7 +34,6 @@ import {
   ENTRY_PRICE_MOVED_ADVERSE_REASON,
   entryPriceMovedAdverse,
 } from '../signalEntryPriceGuard'
-import { stefanDebug } from './stefanDebug'
 import { ENTRY_TP_WITHOUT_SL_REASON } from '../signalEntryNowRequirement'
 import { pipCalculator } from '../pipCalculator'
 import {
@@ -401,15 +400,6 @@ export async function prepareEntryExecution(
   ) {
     try {
       const q = strictEntryPrefetch ?? await api.quote(uuid, symbol)
-      stefanDebug('entry_distance_check', {
-        signal,
-        parsed,
-        symbol,
-        direction: entryDirection,
-        quote: q,
-        rangeTrading: manual.range_trading === true,
-        strictRange: signalEntryRangeStrictEnabled(manual),
-      })
       if (
         entryZoneFarFromQuote({
           parsed,
@@ -492,18 +482,6 @@ export async function prepareEntryExecution(
   const blockNewEntry = sendOpts?.blockNewEntry === true
   const rangeEntryStrict = signalEntryRangeStrictEnabled(manual)
   const basketParameterRefresh = shouldRouteAsBasketParameterRefresh(parsed)
-  stefanDebug('entry_prepare_before_basket_refresh', {
-    signal,
-    parsed,
-    symbol,
-    direction: entryDirection,
-    finalRoutingDecision: isManual && !rangeEntryStrict && (basketParameterRefresh || sameSignalRefresh)
-      ? 'BASKET_REFRESH'
-      : 'NEW_ENTRY',
-    quote: strictEntryPrefetch,
-    rangeTrading: manual.range_trading === true,
-    strictRange: rangeEntryStrict,
-  })
   if (isManual && !rangeEntryStrict && (basketParameterRefresh || sameSignalRefresh)) {
     const paramOutcome = await ctx.tryParameterFollowUpMergeModifyOnly({
       signal,
@@ -686,16 +664,6 @@ export async function prepareEntryExecution(
       && (manual.layering_mode === 'static' || manual.layering_mode === 'dynamic')
       ? { ...manual, layering_mode: 'legacy' as const }
       : manual
-    stefanDebug('before_plan_manual_orders', {
-      signal,
-      parsed: plannerParsed as ParsedSignal,
-      symbol,
-      direction: entryDirection,
-      finalRoutingDecision: 'NEW_ENTRY',
-      quote: strictEntryPrefetch,
-      rangeTrading: planningManual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(planningManual),
-    })
     plan = planManualOrders({
       parsed: plannerParsed,
       resolvedSymbol: symbol,
@@ -719,20 +687,6 @@ export async function prepareEntryExecution(
       commentPrefix,
       expertId: 909090,
       slippage: 20,
-    })
-    stefanDebug('after_plan_manual_orders', {
-      signal,
-      parsed: plannerParsed as ParsedSignal,
-      symbol,
-      direction: entryDirection,
-      finalRoutingDecision: 'NEW_ENTRY',
-      quote: strictEntryPrefetch,
-      rangeTrading: planningManual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(planningManual),
-      plannedOrder: {
-        price: plan.orders[0]?.price ?? null,
-        type: plan.orders[0]?.operation ?? null,
-      },
     })
   } else {
     const entryAnchor =

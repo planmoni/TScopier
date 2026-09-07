@@ -5,6 +5,7 @@ import {
   isLikelyMarketPositionRow,
   isPendingEntryRow,
   readBrokerOrderStopLoss,
+  readBrokerOrderTakeProfit,
 } from './signalEntryPendingHelpers'
 
 test('readBrokerOrderStopLoss reads FxSocket camelCase stopLoss', () => {
@@ -50,4 +51,11 @@ test('findClosedRowForTicket: returns brokerTicket', () => {
   assert.ok(c)
   assert.equal(c!.brokerTicket, 999888)
   assert.equal(c!.openPrice, 2650.1)
+})
+
+test('readBrokerOrderTakeProfit reads FxSocket camelCase takeProfit', () => {
+  assert.equal(readBrokerOrderTakeProfit({ takeProfit: 4123.5 }), 4123.5)
+  assert.equal(readBrokerOrderTakeProfit({ TakeProfit: '4010' }), 4010)
+  assert.equal(readBrokerOrderTakeProfit({ tp: 0 }), null)
+  assert.equal(readBrokerOrderTakeProfit({}), null)
 })

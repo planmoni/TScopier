@@ -7,6 +7,7 @@ export const tradeNotificationsSv: TradeNotificationsTranslations = {
     layeringCompleted: 'LAYERING SLUTFÖRT',
     tradesClosed: 'VISSA AFFÄRER STÄNGDA',
     reviewRequired: 'SIGNAL VÄNTAR PÅ GODKÄNNANDE',
+    manualOverrideReverted: 'Manual trade changes were reverted',
   },
   bodies: {
     executionBatch: '{count} {side}-affärer öppnades i {broker} från {channel}.',
@@ -25,6 +26,7 @@ export const tradeNotificationsSv: TradeNotificationsTranslations = {
     tradesClosedGeneric: '{count} affärer stängdes i {broker} från {channel}.',
     tradesClosedSingle: 'En affär stängdes i {broker} från {channel}.',
     reviewRequired: 'En signal från {channel} väntar på ditt godkännande.',
+    manualOverrideReverted: 'TScopier detected a manual SL/TP change made directly on your broker account and restored the signal managed values. To change SL or TP for a copied signal, use Manage Signal in TScopier.',
   },
   sides: {
     buy: 'köp',
@@ -34,6 +36,9 @@ export const tradeNotificationsSv: TradeNotificationsTranslations = {
   fallbacks: {
     broker: 'ditt konto',
     channel: 'din kanal',
+  },
+  actions: {
+    manageSignal: 'Manage Signal',
   },
   tpReason: 'TP{index}',
 }

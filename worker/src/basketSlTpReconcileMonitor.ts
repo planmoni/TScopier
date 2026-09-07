@@ -2,7 +2,6 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { hasFxsocketConfigured } from './fxsocketClient'
 import { apiForFxsocketAccount, loadPlatformByFxsocketId, type PlatformByFxsocketId } from './mtApiByAccount'
 import {
-  fetchOpenBrokerTickets,
   loadOpenBasketLegs,
   markBasketReconcileDone,
   parsePerLegTargets,
@@ -28,6 +27,11 @@ import { isUserCopierPausedCached } from './copierPause'
 import { brokerSessionUuid } from './tradeExecutor/helpers'
 import { isV2 } from './engine/executionMode'
 import { isExplicitBasketSlSource } from './basketEffectiveStops'
+import {
+  detectManualBrokerStopOverrides,
+  isDriftSweepReconcileJob,
+  notifyManualBrokerOverrideReverted,
+} from './manualBrokerOverrideNotification'
 
 const ACTIVE_MS = monitorActiveIntervalMs('BASKET_RECONCILE_TICK_MS', 5_000)
 const IDLE_MS = monitorIdleIntervalMs('BASKET_RECONCILE_IDLE_MS', 15_000)
@@ -291,14 +295,24 @@ export class BasketSlTpReconcileMonitor {
       }
     } catch { /* optional */ }
 
-    const openedTickets = await fetchOpenBrokerTickets(api, uuid)
+    const preModifyOrdersByTicket = await fetchBrokerOrdersByTicket(api, uuid)
+    const openedTickets = new Set(preModifyOrdersByTicket.keys())
+    const manualBrokerOverrides = isDriftSweepReconcileJob(row)
+      ? detectManualBrokerStopOverrides({
+          familyTrades,
+          perLegTargets: effectiveTargets,
+          ordersByTicket: preModifyOrdersByTicket,
+          nImmCwe: row.n_imm_cwe ?? 0,
+          effectiveStoploss: effectiveStoploss > 0 ? effectiveStoploss : undefined,
+        })
+      : []
     const baseLot = Number(broker.default_lot_size ?? 0.01)
     // One shared quote for the whole basket instead of one per leg.
     let sharedQuote: { bid: number; ask: number } | null = null
     try {
       sharedQuote = await api.quote(uuid, row.symbol)
     } catch { /* per-leg fallback inside runBasketLegModifies */ }
-    const { summary, legErrors } = await runBasketLegModifies({
+    const { summary, legErrors, modifiedTradeIds } = await runBasketLegModifies({
       supabase: this.supabase,
       api,
       uuid,
@@ -386,6 +400,21 @@ export class BasketSlTpReconcileMonitor {
           } as unknown as Record<string, unknown>,
         })
       } catch { /* best-effort */ }
+      if (manualBrokerOverrides.length > 0 && summary.modified > summary.benignModify) {
+        await notifyManualBrokerOverrideReverted({
+          supabase: this.supabase,
+          userId: row.user_id,
+          brokerAccountId: row.broker_account_id,
+          anchorSignalId: row.anchor_signal_id,
+          sourceSignalId: row.source_signal_id,
+          channelId: anchorChannelId,
+          symbol: row.symbol,
+          direction: row.direction,
+          reconcileJobId: row.id,
+          overrides: manualBrokerOverrides,
+          restoredTradeIds: modifiedTradeIds,
+        })
+      }
       await markBasketReconcileDone(this.supabase, row.id)
       await this.supabase
         .from('signals')

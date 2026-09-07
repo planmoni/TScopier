@@ -30,7 +30,6 @@ import {
   type SignalRow,
   type SymbolCacheEntry
 } from '../types'
-import { stefanDebug } from '../stefanDebug'
 import { reconcileGhostBasketLegs, loadMergeSignalForLinking, resolveBasketMergeLinkContext } from './helpers'
 import { applyBasketSlTpRefresh } from './slTpRefresh'
 
@@ -118,16 +117,6 @@ export async function tryParameterFollowUpMergeModifyOnly(ctx: TradeExecutorCont
     } = args
     const sameSignalRefresh = args.sameSignalRefresh === true
     const manual = (broker.manual_settings ?? {}) as ManualSettings
-    stefanDebug('try_parameter_follow_up_entry', {
-      signal,
-      parsed,
-      symbol,
-      direction: parsed.action ?? null,
-      finalRoutingDecision: 'BASKET_REFRESH',
-      quote: strictEntryPrefetch,
-      rangeTrading: manual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(manual),
-    })
     const revisionSafeSkip = (): MergeOutcome => revisionRefreshSafeSkipOutcome()
     if (!hasFxsocketConfigured()) return sameSignalRefresh ? revisionSafeSkip() : { handled: false }
     if (parsedHasReEnterIntent(parsed)) return sameSignalRefresh ? revisionSafeSkip() : { handled: false }
@@ -226,18 +215,6 @@ export async function tryParameterFollowUpMergeModifyOnly(ctx: TradeExecutorCont
       parsed,
     })
     const unlinkedCompleteEntryMerge = isUnlinkedCompleteEntryMerge(parsed, link)
-    stefanDebug('before_is_unlinked_complete_entry_merge_parameter_follow_up', {
-      signal,
-      parsed,
-      symbol,
-      direction,
-      link,
-      guardResult: unlinkedCompleteEntryMerge,
-      finalRoutingDecision: unlinkedCompleteEntryMerge ? 'NEW_ENTRY' : 'BASKET_REFRESH',
-      quote: strictEntryPrefetch,
-      rangeTrading: manual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(manual),
-    })
     if (!sameSignalRefresh && unlinkedCompleteEntryMerge) {
       console.warn(
         `[tradeExecutor] modify-only merge skipped for unlinked complete entry signal=${signal.id}`
@@ -349,18 +326,6 @@ export async function tryParameterFollowUpMergeModifyOnly(ctx: TradeExecutorCont
       return { handled: false }
     }
 
-    stefanDebug('before_apply_basket_sltp_refresh_parameter_follow_up', {
-      signal,
-      parsed,
-      symbol,
-      direction,
-      link,
-      guardResult: unlinkedCompleteEntryMerge,
-      finalRoutingDecision: 'BASKET_REFRESH',
-      quote: strictEntryPrefetch,
-      rangeTrading: manual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(manual),
-    })
 
     const outcome = await applyBasketSlTpRefresh(ctx, {
       signal,
@@ -481,18 +446,6 @@ export async function tryMergeSignalIntoExistingOpenTrade(ctx: TradeExecutorCont
       parsed,
     })
     const unlinkedCompleteEntryMerge = isUnlinkedCompleteEntryMerge(parsed, link)
-    stefanDebug('before_is_unlinked_complete_entry_merge_stack', {
-      signal,
-      parsed,
-      symbol,
-      direction,
-      link,
-      guardResult: unlinkedCompleteEntryMerge,
-      finalRoutingDecision: unlinkedCompleteEntryMerge ? 'NEW_ENTRY' : 'BASKET_REFRESH',
-      quote: strictEntryPrefetch,
-      rangeTrading: manual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(manual),
-    })
     if (unlinkedCompleteEntryMerge) {
       console.warn(
         `[tradeExecutor] merge skipped for unlinked complete entry signal=${signal.id}`
@@ -510,18 +463,6 @@ export async function tryMergeSignalIntoExistingOpenTrade(ctx: TradeExecutorCont
       return { handled: false }
     }
 
-    stefanDebug('before_apply_basket_sltp_refresh_stack', {
-      signal,
-      parsed,
-      symbol,
-      direction,
-      link,
-      guardResult: unlinkedCompleteEntryMerge,
-      finalRoutingDecision: 'BASKET_REFRESH',
-      quote: strictEntryPrefetch,
-      rangeTrading: manual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(manual),
-    })
     const refresh = await applyBasketSlTpRefresh(ctx, {
       signal,
       parsed,
@@ -663,17 +604,6 @@ export async function tryTeaserCompletionMerge(ctx: TradeExecutorContext, args: 
     )
 
 
-    stefanDebug('before_apply_basket_sltp_refresh_teaser_completion', {
-      signal,
-      parsed,
-      symbol,
-      direction,
-      link,
-      finalRoutingDecision: 'BASKET_REFRESH',
-      quote: strictEntryPrefetch,
-      rangeTrading: manual.range_trading === true,
-      strictRange: signalEntryRangeStrictEnabled(manual),
-    })
     const outcome = await applyBasketSlTpRefresh(ctx, {
       signal,
       parsed,
