@@ -46,6 +46,7 @@ function renderFlow(opts: {
         error: '',
         onSendCode: () => {},
         onResendCode: () => {},
+        onRequestNewCode: () => {},
         onVerifyCode: () => {},
         onStartQr: () => {},
         onVerifyQrPassword: () => {},
@@ -55,11 +56,12 @@ function renderFlow(opts: {
 }
 
 describe('TelegramConnectFlow phone-code fallback state', () => {
-  it('hides resend and shows QR fallback when app delivery has no Telegram resend path', () => {
+  it('shows a prominent app-hint and a "Send a new code" button when app delivery has no Telegram resend path', () => {
     const html = renderFlow({ codeDelivery: 'app', nextCodeDelivery: null, canResend: false })
 
     expect(html).toContain('Telegram sent the login code through the Telegram app.')
-    expect(html).not.toContain('Telegram accepted the login request, but did not offer another code delivery method.')
+    expect(html).toContain('The code is NOT sent by SMS.')
+    expect(html).toContain('Send a new code')
     expect(html).toContain('Connect with QR instead')
     expect(html).not.toContain('Request another delivery method')
     expect(html).not.toContain('SMS may become available')
@@ -76,6 +78,7 @@ describe('TelegramConnectFlow phone-code fallback state', () => {
 
     expect(html).toContain('SMS may become available after the countdown.')
     expect(html).toContain('Request another delivery method')
+    expect(html).not.toContain('Send a new code')
     expect(html).not.toContain('Connect with QR instead')
   })
 })

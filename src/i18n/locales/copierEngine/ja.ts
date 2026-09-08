@@ -47,6 +47,8 @@ export const copierEngineJa: CopierEngineBundleTranslations = {
     sendCode: 'コードを送信',
     verificationCode: '認証コード',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'スマホのTelegramアプリを開き、Telegramからのログインコード（5桁）が含まれるメッセージを探してください。コードはSMSでは送信されません。',
+    sendNewCode: '新しいコードを送信',
     sentTo: '{phone} に送信済み',
     twoFaPassword: '2FAパスワード',
     twoFaPlaceholder: 'Telegramのパスワード',

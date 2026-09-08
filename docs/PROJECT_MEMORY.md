@@ -2,6 +2,32 @@
 
 ## Changelog
 
+### 2026-09-08 — Telegram listener reconnect storm: flapping loop that blocked new logins (users could not re-connect Telegram)
+
+- **Plain English:** Several users reported they could not connect their Telegram account. Behind the scenes their listeners were stuck in a loop — constantly dropping and reconnecting every ~20 seconds for hours — and during that state the app could not even request a fresh login code. The failure had two parts: a counting bug meant the safety mechanism that should have restarted a stuck listener never fired, and a network hang could permanently freeze the reconnect logic. We fixed both so a stuck listener now either recovers on its own or is cleanly restarted, and a single mistaken login code no longer forces the user to start over.
+- **Root cause (technical):**
+  1. `sessionManager.ts` `renewOneListenerLease` deleted the `disconnectedRenewTicks` counter **unconditionally** every renew tick (line 408), even while the listener was disconnected. The counter is what triggers the hard-reset escape hatch after `disconnectedRenewHealTicks()` failed ticks (default 3 ≈ 60s); because it was wiped each tick, the hard-reset never fired and a wedged listener flapped "disconnected but renewing lease anyway" every ~20s indefinitely. The lease kept getting renewed, so no other worker replica could take the user over.
+  2. `userListener.ts` `forceReconnect` called `client.connect()` with **no timeout**. A hung MTProto socket (Telegram DC unreachable) left `reconnectInFlight` pending forever; `requestReconnect` returns the existing in-flight promise when one is set (line 4508), so every subsequent reconnect request became a no-op and no new `force reconnect` ever ran. `stop()` also awaited `reconnectInFlight` unbounded, so a wedged reconnect blocked `disconnectTelegramSession` and the lease hard-reset.
+  3. `telegramAuthRecovery.ts` classified `PHONE_CODE_INVALID` as **fatal**, destroying the pending auth on a single typo'd code. Telegram actually keeps the `phoneCodeHash` valid across wrong-code retries, so this forced a full `send_code` restart for a trivially recoverable mistake.
+- **Fix (files):**
+  - `worker/src/sessionManager.ts` — moved `disconnectedRenewTicks.delete(userId)` into the `else` (connected) branch so the counter accumulates across disconnected ticks and the hard-reset actually fires after `disconnectedRenewHealTicks()` failed ticks.
+  - `worker/src/userListener.ts` — added `withTelegramTimeout()` (async race helper) + `telegramConnectTimeoutMs()` (env `TELEGRAM_CONNECT_TIMEOUT_MS`, default 45s, clamped 5–120s). Wrapped `client.connect()` + `updates.GetState()` probe in `forceReconnect` and `reconnectAndRetryDialogs`, and `stop()`'s await on `reconnectInFlight`, so a hung socket can never wedge reconnect or block disconnect. Added `if (this.stopping) { disconnect; return/break }` after every connect/probe await, and disconnect-before-retry in the transient-error catch, so a timed-out-but-orphaned connect cannot double-connect (AUTH_KEY_DUPLICATED risk) and a stopped listener cannot be re-connected. Post-loop warmup also guards on `this.stopping`.
+  - `worker/src/telegramAuthRecovery.ts` — `PHONE_CODE_INVALID` now recoverable (keeps pending auth so the user can retry the code); `PHONE_CODE_EXPIRED` remains fatal.
+  - `src/components/telegram/TelegramConnectFlow.tsx` — when `codeDelivery === 'app'`, shows a prominent callout: "Open Telegram on your phone … The code is NOT sent by SMS." Added an always-visible "Send a new code" button (when `canResend` false) that re-requests via `send_code` through the new `onRequestNewCode` prop, so users stranded after expiry/no-resend can restart cleanly.
+  - `src/pages/dashboard/CopierEnginePage.tsx` + `src/pages/onboarding/steps/TelegramLinkStep.tsx` — extracted a `requestCode()` helper (shared by `sendCode` and `onRequestNewCode`).
+  - `src/i18n/locales/{en,es,fr,ar}.ts` + `src/i18n/locales/copierEngine/{pl,ru,sv,nl,ja}.ts` + `types.ts` — added `tgConnectCodeAppHint` + `sendNewCode` keys.
+  - `worker/src/withTelegramTimeout.test.ts` (new) — 3 tests proving the timeout helper resolves / times out / propagates errors.
+- **Design decisions:**
+  - `withTelegramTimeout` does not cancel the underlying connect — the cycle just stops waiting and treats the attempt as failed; the client is disconnected before the next retry to avoid double-connect.
+  - The timeout timer is not `unref`'d because it is always cleared in `finally` and only holds the loop during the bounded race.
+  - Kept `PHONE_CODE_EXPIRED` fatal (the code is genuinely dead) while making only `PHONE_CODE_INVALID` recoverable — matches Telegram's documented behavior.
+- **Tests/verification:** worker `tsc` PASS; 48 worker tests PASS (telegramAuthRecovery, authService.resend, sessionManager.shutdown/realtime, withTelegramTimeout); frontend `tsc -b` PASS; 2 vitest component tests PASS; eslint clean on all changed files (page-file React Compiler errors are pre-existing debt). Post-implementation review (code-review subagent) found a CRITICAL bug in the timeout helper (non-async `finally` cancelled the timer synchronously) + 2 HIGH hazards (orphaned connect, post-stop reconnect); all fixed and re-reviewed → APPROVE_WITH_NOTES, with the 2 optional LOW notes also applied.
+- **Deploy state:** committed to `staging` branch; NOT yet deployed (requires Railway deploy of listener/trade worker to staging, then prod).
+- **Follow-ups:** 
+  1. Deploy worker to Railway staging (then prod) to activate the reconnect-timeout + heal-counter fixes.
+  2. Consider bumping `LISTENER_DISCONNECT_HEAL_TICKS` env if a slow-but-legit reconnect (>60s) gets hard-reset too eagerly.
+  3. Monitor Railway logs for the 4 flapping users (`af75b63e`, `30c3fa79`, `494bdb70`, `dd18ad68`) — they should no longer flap after deploy.
+
 ### 2026-09-07 — signal-review-email: Telegram self-notification + Promotions tab fix attempt
 
 - **Plain English:** Users receiving "signal awaiting approval" emails were finding them in Gmail's Promotions tab instead of Primary. We added Telegram Saved Messages as a second notification channel (instant, no deliverability issues) and attempted to fix the email Promotions classification by adding `List-Unsubscribe` headers, a `categories: ["transactional"]` flag, and checking DNS authentication. The email was confirmed working (Resend accepted it, `email_campaign_log` row exists) — the issue was Gmail classification, not delivery.

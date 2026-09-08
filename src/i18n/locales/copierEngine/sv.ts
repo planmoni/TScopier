@@ -47,6 +47,8 @@ export const copierEngineSv: CopierEngineBundleTranslations = {
     sendCode: 'Skicka kod',
     verificationCode: 'Verifieringskod',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'Öppna Telegram-appen på telefonen och leta efter ett meddelande från Telegram med den 5-siffriga inloggningskoden. Koden skickas INTE via SMS.',
+    sendNewCode: 'Skicka en ny kod',
     sentTo: 'Skickat till {phone}',
     twoFaPassword: '2FA-lösenord',
     twoFaPlaceholder: 'Ditt Telegram-lösenord',

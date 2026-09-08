@@ -1146,6 +1146,8 @@ export interface CopierEnginePageTranslations {
   verificationCode: string
   verificationPlaceholder: string
   sentTo: string
+  tgConnectCodeAppHint: string
+  sendNewCode: string
   twoFaPassword: string
   twoFaPlaceholder: string
   twoFaRequired: string

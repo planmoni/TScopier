@@ -744,8 +744,7 @@ export function CopierEnginePage() {
     }
   }
 
-  const sendCode = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const requestCode = async () => {
     setTgError('')
     setTgLoading(true)
     try {
@@ -772,6 +771,11 @@ export function CopierEnginePage() {
     } finally {
       setTgLoading(false)
     }
+  }
+
+  const sendCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    await requestCode()
   }
 
   const resendCode = async () => {
@@ -943,6 +947,7 @@ export function CopierEnginePage() {
           error={tgError}
           onSendCode={sendCode}
           onResendCode={resendCode}
+          onRequestNewCode={requestCode}
           onVerifyCode={verifyCode}
           onStartQr={startQrLogin}
           onVerifyQrPassword={verifyQrPassword}

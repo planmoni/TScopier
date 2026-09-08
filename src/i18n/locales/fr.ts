@@ -1032,6 +1032,8 @@ export const fr: Translations = {
     sendCode: 'Envoyer le code',
     verificationCode: 'Code de vérification',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'Ouvrez l\'application Telegram sur votre téléphone et cherchez un message de Telegram contenant le code de connexion à 5 chiffres. Le code n\'est PAS envoyé par SMS.',
+    sendNewCode: 'Envoyer un nouveau code',
     sentTo: 'Envoyé à {phone}',
     twoFaPassword: 'Mot de passe 2FA',
     twoFaPlaceholder: 'Votre mot de passe Telegram',

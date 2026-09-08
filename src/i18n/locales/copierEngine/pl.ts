@@ -47,6 +47,8 @@ export const copierEnginePl: CopierEngineBundleTranslations = {
     sendCode: 'Wyślij kod',
     verificationCode: 'Kod weryfikacyjny',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'Otwórz aplikację Telegram na telefonie i poszukaj wiadomości od Telegrama z 5-cyfrowym kodem logowania. Kod NIE jest wysyłany przez SMS.',
+    sendNewCode: 'Wyślij nowy kod',
     sentTo: 'Wysłano na {phone}',
     twoFaPassword: 'Hasło 2FA',
     twoFaPlaceholder: 'Twoje hasło Telegram',

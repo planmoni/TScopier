@@ -311,6 +311,30 @@ function reconnectCooldownMs(): number {
   return Math.max(500, Math.min(120_000, Number(process.env.TELEGRAM_RECONNECT_COOLDOWN_MS ?? 3500)))
 }
 
+/**
+ * Hard cap on a single Telegram connect()/probe inside forceReconnect. A hung
+ * socket must not wedge reconnectInFlight forever (incident 2026-09-07: a wedged
+ * connect left requestReconnect returning the same stuck promise, so the listener
+ * flapped "disconnected but renewing lease anyway" for hours and no hard-reset
+ * could ever run). The underlying promise is NOT cancelled — the cycle just stops
+ * waiting and treats the attempt as failed so retry/exhaust logic can proceed.
+ */
+function telegramConnectTimeoutMs(): number {
+  return Math.max(5_000, Math.min(120_000, Number(process.env.TELEGRAM_CONNECT_TIMEOUT_MS ?? 45_000)))
+}
+
+export async function withTelegramTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+  })
+  try {
+    return await Promise.race([p, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 function malformedRpcResultMaxRecoveries(): number {
   return Math.max(
     1,
@@ -1101,7 +1125,14 @@ export class UserListener {
         this.deferredRetryTimer = null
       }
       if (this.reconnectInFlight) {
-        await this.reconnectInFlight.catch(() => {})
+        // A wedged connect can leave reconnectInFlight pending forever; never
+        // let stop() hang on it (incident 2026-09-07 — a stuck reconnect blocked
+        // disconnectTelegramSession and the lease-renew hard-reset path).
+        await withTelegramTimeout(
+          this.reconnectInFlight.catch(() => {}),
+          telegramConnectTimeoutMs(),
+          `listener stop await reconnect ${this.userId}`,
+        ).catch(() => {})
       }
       await this.persistSessionIfChanged()
       this.connectionTrace('disconnect_start', { source: 'stop' })
@@ -1504,7 +1535,12 @@ export class UserListener {
       try {
         this.clientGeneration += 1
         this.connectionTrace('connect_start', { source: 'getDialogs', cycleId, attempt: attempt + 1 })
-        await this.client.connect()
+        await withTelegramTimeout(
+          this.client.connect(),
+          telegramConnectTimeoutMs(),
+          `telegram connect getDialogs ${this.userId}`,
+        )
+        if (this.stopping) { try { await this.client.disconnect() } catch { /* ignore */ } break }
         this.isConnected = true
         const dialogs = await this.fetchAllDialogs()
         this.connectionTrace('recovery_complete', { source: 'getDialogs', cycleId, attempt: attempt + 1 })
@@ -4603,9 +4639,19 @@ export class UserListener {
       try {
         this.clientGeneration += 1
         this.connectionTrace('connect_start', { source: reason, cycleId, attempt: attempt + 1 })
-        await this.client.connect()
+        await withTelegramTimeout(
+          this.client.connect(),
+          telegramConnectTimeoutMs(),
+          `telegram connect ${this.userId}`,
+        )
+        if (this.stopping) { try { await this.client.disconnect() } catch { /* ignore */ } return }
         this.connectionTrace('probe_start', { source: reason, cycleId, attempt: attempt + 1 })
-        await tgInvoke(this.client, new Api.updates.GetState())
+        await withTelegramTimeout(
+          tgInvoke(this.client, new Api.updates.GetState()),
+          telegramConnectTimeoutMs(),
+          `telegram probe ${this.userId}`,
+        )
+        if (this.stopping) { try { await this.client.disconnect() } catch { /* ignore */ } return }
         this.isConnected = true
         this.resetTelegramBackoffState()
         this.lastSuccessfulPollAt = Date.now()
@@ -4625,7 +4671,19 @@ export class UserListener {
         )
         if (isAuthKeyUnregistered(err)) return
         if (!isAuthKeyDuplicated(err)) {
-          // Transient network errors: keep trying remaining delays.
+          // Transient network errors / connect timeouts: keep trying remaining
+          // delays. Disconnect first so a connect() that timed out but later
+          // completes in the background cannot double-connect on the next
+          // attempt (AUTH_KEY_DUPLICATED risk).
+          this.connectionTrace('disconnect_start', { source: `${reason}:retry_${attempt + 1}`, cycleId })
+          try {
+            await withTelegramTimeout(
+              this.client.disconnect(),
+              telegramConnectTimeoutMs(),
+              `telegram disconnect ${this.userId}`,
+            )
+          } catch { /* ignore */ }
+          this.connectionTrace('disconnect_complete', { source: `${reason}:retry_${attempt + 1}`, cycleId })
           continue
         }
         incMetric('auth_key_duplicated')
@@ -4635,7 +4693,13 @@ export class UserListener {
           + ` for ${this.userId} cycle=${cycleId}`,
         )
         this.connectionTrace('disconnect_start', { source: `${reason}:retry_${attempt + 1}`, cycleId })
-        try { await this.client.disconnect() } catch { /* ignore */ }
+        try {
+          await withTelegramTimeout(
+            this.client.disconnect(),
+            telegramConnectTimeoutMs(),
+            `telegram disconnect ${this.userId}`,
+          )
+        } catch { /* ignore */ }
         this.connectionTrace('disconnect_complete', { source: `${reason}:retry_${attempt + 1}`, cycleId })
       }
     }
@@ -4703,7 +4767,7 @@ export class UserListener {
       }
       throw err
     }
-    if (!this.isConnected) {
+    if (!this.isConnected || this.stopping) {
       return
     }
     await this.refreshChannelSubscription()

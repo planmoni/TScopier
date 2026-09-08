@@ -1078,6 +1078,9 @@ broker: {
     verificationCode: 'Verification code',
     verificationPlaceholder: '12345',
     sentTo: 'Sent to {phone}',
+    tgConnectCodeAppHint:
+      'Open Telegram on your phone and look for a message from Telegram containing the 5-digit login code. The code is NOT sent by SMS.',
+    sendNewCode: 'Send a new code',
     twoFaPassword: '2FA password',
     twoFaPlaceholder: 'Your Telegram password',
     twoFaRequired: 'Enter your Telegram 2FA password.',

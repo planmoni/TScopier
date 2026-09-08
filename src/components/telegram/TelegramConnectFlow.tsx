@@ -34,6 +34,7 @@ interface TelegramConnectFlowProps {
   error: string
   onSendCode: (e: FormEvent) => void
   onResendCode: () => void
+  onRequestNewCode: () => void
   onVerifyCode: (e: FormEvent) => void
   onStartQr: () => void
   onVerifyQrPassword: (e: FormEvent) => void
@@ -86,6 +87,7 @@ export function TelegramConnectFlow({
   error,
   onSendCode,
   onResendCode,
+  onRequestNewCode,
   onVerifyCode,
   onStartQr,
   onVerifyQrPassword,
@@ -323,6 +325,14 @@ export function TelegramConnectFlow({
 
         {stage === 'code' && (
           <form onSubmit={onVerifyCode} className="space-y-4">
+            {codeDelivery === 'app' && (
+              <Alert variant="warning" className="text-left">
+                <div className="flex items-start gap-2">
+                  <Smartphone className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <p>{ce.tgConnectCodeAppHint}</p>
+                </div>
+              </Alert>
+            )}
             <Input
               label={ce.verificationCode}
               placeholder={ce.verificationPlaceholder}
@@ -346,6 +356,17 @@ export function TelegramConnectFlow({
                 {resendWaitSeconds > 0
                   ? `Request another delivery method in ${resendWaitSeconds}s`
                   : 'Request another delivery method'}
+              </Button>
+            )}
+            {!canResend && (
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                disabled={loading}
+                onClick={onRequestNewCode}
+              >
+                {ce.sendNewCode}
               </Button>
             )}
             {noAppFallback && (
