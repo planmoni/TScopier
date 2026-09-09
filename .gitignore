@@ -36,3 +36,6 @@ scripts/cline-review.sh
 scripts/cline-runner.mjs
 scripts/opencode-bridge.mjs
 
+# Firecrawl research cache (local only)
+.firecrawl/
+
