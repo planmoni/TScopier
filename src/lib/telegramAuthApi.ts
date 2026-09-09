@@ -35,6 +35,24 @@ export type TelegramCodeStatusResponse = {
   code_length?: number | null
 }
 
+// Minimum cooldown before "Send a new code" re-enables after a code is
+// requested. The worker only returns a real resend_available_at when Telegram
+// offers an SMS/call resend path; when the code is delivered to the app only,
+// we still enforce this short floor so the button is never instantly clickable.
+export const MIN_RESEND_COOLDOWN_MS = 30_000
+
+// Resolve the resend-availability window to pass to the connect flow. When the
+// worker gives none and there is no real resend path (app-only delivery), fall
+// back to a fresh 30s window so the countdown shows and the button is blocked
+// right after a code is requested. When the worker gives a real window (SMS/call
+// next delivery) or when the code was just requested via app-only, the server
+// value always wins — we only impose the floor on the app-only no-resend branch.
+export function resolveResendAvailableAt(data: TelegramCodeStatusResponse): string | null {
+  if (data.resend_available_at) return data.resend_available_at
+  if (!data.can_resend) return new Date(Date.now() + MIN_RESEND_COOLDOWN_MS).toISOString()
+  return null
+}
+
 export type TelegramAuthErrorMessages = {
   telegramAlreadyLinked: string
   failedStartQr?: string

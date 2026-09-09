@@ -4,6 +4,7 @@ import { useT } from '../../../context/LocaleContext'
 import { resolveTelegramAuthError, isNoPendingPhoneAuthError } from '../../../lib/telegramAuthError'
 import {
   callTelegramAuth,
+  resolveResendAvailableAt,
   resolveTelegramAuthErrorMessage,
   type QrPollResponse,
   type TelegramCodeDelivery,
@@ -164,7 +165,7 @@ export function TelegramLinkStep({ onDone }: Props) {
       setPhone(normalizedPhone)
       setCodeDelivery(data.delivery ?? null)
       setNextCodeDelivery(data.next_delivery ?? null)
-      setResendAvailableAt(data.resend_available_at ?? null)
+      setResendAvailableAt(resolveResendAvailableAt(data))
       setCanResendCode(Boolean(data.can_resend))
       setStage('code')
     } catch {
@@ -218,7 +219,7 @@ export function TelegramLinkStep({ onDone }: Props) {
       setPhone(normalizedPhone)
       setCodeDelivery(data.delivery ?? null)
       setNextCodeDelivery(data.next_delivery ?? null)
-      setResendAvailableAt(data.resend_available_at ?? null)
+      setResendAvailableAt(resolveResendAvailableAt(data))
       setCanResendCode(Boolean(data.can_resend))
       setStage('code')
     } catch {
