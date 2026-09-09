@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color: #1e293b; font-size: 10.5px; line-height: 1.5; margin: 0; }
+  h1 { font-size: 19px; margin: 0 0 2px 0; color: #0f172a; }
+  .subtitle { color: #64748b; font-size: 11px; margin-bottom: 12px; }
+  h2 { font-size: 12.5px; margin: 16px 0 6px 0; padding-bottom: 3px; border-bottom: 2px solid #2563eb; color: #0f172a; }
+  table { border-collapse: collapse; width: 100%; }
+  code { font-family: Menlo, Consolas, monospace; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 9.5px; }
+  .meta { width: 100%; margin-bottom: 6px; }
+  .meta td { padding: 4px 8px; vertical-align: top; border: 1px solid #e2e8f0; }
+  .meta .k { color: #64748b; font-weight: bold; width: 90px; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.5px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: bold; font-size: 9.5px; }
+  .pill.green { background: #dcfce7; color: #15803d; }
+  .pill.red { background: #fee2e2; color: #b91c1c; }
+  .pill.amber { background: #fef3c7; color: #b45309; }
+  .box { border-left: 4px solid #2563eb; background: #eff6ff; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; }
+  .box.green { border-left-color: #16a34a; background: #f0fdf4; }
+  .box.amber { border-left-color: #d97706; background: #fffbeb; }
+  ol, ul { margin: 4px 0 8px 18px; padding: 0; }
+  li { margin-bottom: 4px; }
+  .tbl { margin-top: 4px; }
+  .tbl th { background: #f1f5f9; text-align: left; padding: 4px 8px; border: 1px solid #e2e8f0; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.4px; color: #475569; }
+  .tbl td { padding: 4px 8px; border: 1px solid #e2e8f0; vertical-align: top; }
+  .ts { font-family: Menlo, Consolas, monospace; font-size: 9px; color: #475569; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>User could not connect Telegram &mdash; wedged listener after key revocation</h1>
+<div class="subtitle">Incident report &middot; TScopier worker (prod listener) &middot; 2026-09-09</div>
+
+<table class="meta">
+  <tr>
+    <td class="k">Severity</td><td><span style="color:#b45309;font-weight:bold;">Medium</span></td>
+    <td class="k">Status</td><td><span class="pill amber">Mitigated &mdash; fix awaiting deploy</span></td>
+  </tr>
+  <tr>
+    <td class="k">Dates</td><td>Linked 2026-09-08 05:41 UTC; connection lost 2026-09-08 10:58 UTC; self-cleared 2026-09-09 ~07:14 UTC</td>
+    <td class="k">Affected</td><td>1 user &mdash; <code>simofiore16321@gmail.com</code> (<code>8491f3f9-ee04-4870-bb93-05fb4bccb856</code>)</td>
+  </tr>
+  <tr>
+    <td class="k">Component</td><td><code>worker/src/sessionManager.ts</code>, <code>worker/src/userListener.ts</code> (prod listener deployment <code>0a560378</code>)</td>
+    <td class="k">Root cause</td><td>Telegram revoked the auth key; the pre-fix worker could not reconnect or stop the listener (reconnect-storm bugs)</td>
+  </tr>
+</table>
+
+<h2>1. Executive summary (plain English)</h2>
+<div class="box green">
+<p>A user who linked her Telegram account on the morning of September 8 was able to copy signals normally for about five hours. Then Telegram suddenly stopped recognising her login (a background security key was revoked), so her account went offline. When the system tried to reconnect her, our worker software on production got stuck &mdash; it kept trying but could never reconnect, and it could not be cleanly stopped either. From then on, every attempt she made to reconnect &mdash; clicking &ldquo;Reconnect&rdquo;, requesting a new code, or using the QR code &mdash; timed out and failed.</p>
+<p>Nothing she did caused this. The software bug that trapped her was already known and had a written fix, but that fix was not yet running on production. About a day later the stuck background process cleared itself on its own, releasing her account. She is able to connect again with a fresh login. The permanent fix is still waiting to be deployed to production.</p>
+</div>
+
+<h2>2. Issue encountered</h2>
+<ul>
+  <li>User <code>simofiore16321@gmail.com</code> reported she could not connect (reconnect) her Telegram account.</li>
+  <li>Investigation of production Railway logs for her user id (<code>8491f3f9</code>) and the prod DB showed the full chain: a clean link, then a Telegram-side key revocation, then a listener that flapped &ldquo;disconnected but renewing lease anyway&rdquo; every ~20 seconds for over 20 hours, during which every reconnect or new-login request timed out after ~90 seconds (<code>AUTH_OPERATION_TIMEOUT</code>).</li>
+</ul>
+
+<h2>3. Affected user(s)</h2>
+<table class="tbl">
+  <tr><th>Account (email)</th><th>Supabase id</th><th>Telegram id</th><th>Phone</th><th>Linked (UTC)</th><th>Session / claim state</th></tr>
+  <tr>
+    <td>simofiore16321@gmail.com</td>
+    <td><code>8491f3f9-&hellip;b856</code></td>
+    <td>7480332791</td>
+    <td>+39 &mdash; (masked)</td>
+    <td class="ts">2026-09-08 05:41:04</td>
+    <td>session <b>gone</b>; claim <b>intact</b></td>
+  </tr>
+</table>
+<p class="note">No trades were affected &mdash; the copier had not opened positions for this user before the connection was lost. This incident is about the Telegram link itself.</p>
+
+<h2>4. Root cause</h2>
+<div class="box amber">
+<p><strong>The trigger (specific to this user):</strong> At <span class="ts">2026-09-08 10:58:27 UTC</span> Telegram started rejecting every request from her session with <code>401 AUTH_KEY_UNREGISTERED</code> &mdash; Telegram had revoked/deactivated her auth key. This was isolated to her at that moment (not a multi-user wave), and no duplicate session was detected from our side or any other worker, so it was a Telegram-side key revocation.</p>
+<p><strong>Why she could not recover (the bug):</strong> The production worker was running a pre-fix build (deployment <code>0a560378</code>, built 2026-09-04). Two known bugs in that build &mdash; the same family as the 2026-09-07 reconnect-storm incident &mdash; meant a listener whose key had died could never heal or be stopped:</p>
+<ul>
+  <li><code>sessionManager.ts</code> &mdash; the <code>disconnectedRenewTicks</code> counter (the escape hatch that hard-restarts a stuck listener after ~60s) was deleted every renewal tick, so it never accumulated and the restart never fired (Bug A).</li>
+  <li><code>userListener.ts</code> &mdash; <code>forceReconnect</code>&rsquo;s <code>client.connect()</code> had no timeout, and <code>stop()</code> awaited the in-flight reconnect forever, so reconnect and stop both wedged; the lease was renewed forever, blocking any other worker from taking the user over (Bug B).</li>
+</ul>
+</div>
+
+<h2>5. The fix</h2>
+<ul>
+  <li>The code fix for both bugs already exists on the <code>staging</code> branch (commit <code>1ecb9e47</code>, 2026-09-08): the heal counter now accumulates across disconnected ticks, and every connect/disconnect/stop step is wrapped in a timeout (<code>withTelegramTimeout</code> / <code>TELEGRAM_CONNECT_TIMEOUT_MS</code>) so nothing can wedge forever.</li>
+  <li>It has <b>not</b> been merged/deployed to production, which is why this user hit it.</li>
+</ul>
+
+<h2>6. Timeline (UTC)</h2>
+<table class="tbl">
+  <tr><th>Time (UTC)</th><th>Event</th></tr>
+  <tr><td class="ts">09-08 05:37:31</td><td>Account created and email confirmed.</td></tr>
+  <tr><td class="ts">09-08 05:40&ndash;05:41</td><td>Phone-code login. Two failed code requests (wrong number format), then success: <code>send_code OK</code> (delivery=app), code verified 05:41:04 as Telegram user 7480332791 (Italian number), 20 channels, session persisted, listener started.</td></tr>
+  <tr><td class="ts">09-08 05:41&ndash;10:58</td><td>Listener <b>connected and healthy</b> (probes OK). Dispatched a signal at 06:01:20 &mdash; the copier worked.</td></tr>
+  <tr><td class="ts">09-08 10:58:27</td><td><code>401 AUTH_KEY_UNREGISTERED</code> on all requests &mdash; Telegram revoked the auth key (isolated to this user).</td></tr>
+  <tr><td class="ts">09-08 10:59:09</td><td>Watchdog (2 failed probes) triggers force reconnect; connect attempt hits a malformed RPC result and never reconnects (<code>connected=false</code> from here).</td></tr>
+  <tr><td class="ts">09-08 10:59:23</td><td>Flapping begins: &ldquo;listener disconnected but renewing lease anyway&rdquo; every ~20s, continuously.</td></tr>
+  <tr><td class="ts">09-08 12:44:58</td><td>Health row freezes: <code>shutdown_in_progress=true</code>, <code>listener_stop_requested</code>.</td></tr>
+  <tr><td class="ts">09-08 12:45/12:46/12:50</td><td>User clicks &ldquo;Reconnect&rdquo;: each logs &ldquo;stopping listener (attempt 1/4)&rdquo; and never advances &mdash; stop is wedged.</td></tr>
+  <tr><td class="ts">09-08 22:48</td><td>User clicks &ldquo;Send a new code&rdquo;: hangs, then <code>AUTH_OPERATION_TIMEOUT</code> after ~90s; ~8 retries rejected as <code>duplicate_in_flight</code>. &ldquo;stopping listener&rdquo; spam until 09-09 06:52.</td></tr>
+  <tr><td class="ts">09-09 06:35 / 06:40</td><td>Phone-code and QR login attempts both time out after ~90s.</td></tr>
+  <tr><td class="ts">09-09 ~07:13&ndash;07:14</td><td>Flapping stops; lease no longer renewed; lease expires 07:14:22. Worker (same deployment) stays alive serving other users. The wedged listener clears itself.</td></tr>
+  <tr><td class="ts">09-09 current</td><td>No active listener, no session, lease expired, account claim intact &mdash; user can reconnect with a fresh login.</td></tr>
+</table>
+
+<h2>7. Files changed / relevant</h2>
+<ul>
+  <li><code>worker/src/sessionManager.ts</code> &mdash; Bug A (heal counter). Fix already on staging.</li>
+  <li><code>worker/src/userListener.ts</code> &mdash; Bug B (timeouts on connect/disconnect/stop). Fix already on staging.</li>
+  <li><code>worker/src/telegramAuthRecovery.ts</code> &mdash; related auth-error handling. Fix already on staging.</li>
+  <li>Scratchpad: <code>docs/scratchpads/scratchpad-telegram-connect-simofiore16321-2026-09-09.md</code> (gitignored, local).</li>
+</ul>
+
+<h2>8. Verification</h2>
+<ul>
+  <li>Confirmed the full failure chain in production Railway logs (filter <code>8491f3f9</code>) and the prod DB.</li>
+  <li>Confirmed the running deployment (<code>0a560378</code>, 09-04) predates the fix and is still alive and serving other users normally.</li>
+  <li>Confirmed the current clean state: <code>telegram_sessions</code> empty, <code>telegram_auth_pending</code> empty, lease expired 09-09 07:14, account claim intact.</li>
+</ul>
+
+<h2>9. Deployment status &amp; follow-ups</h2>
+<div class="box green">
+<p><strong>Immediate:</strong> A production restart of <code>TScopier - Listener</code> (same image) was done to clear any residual wedged listeners; the affected user can retry a fresh QR/phone login now.</p>
+<p><strong>Permanent:</strong> The reconnect-storm fix (commit <code>1ecb9e47</code>) is on <code>staging</code> and must be merged and deployed to the production worker so this class of failure cannot recur.</p>
+</div>
+<ul>
+  <li>Deploy the worker fix (<code>1ecb9e47</code>) to production (listener + trade worker).</li>
+  <li>After deploy, watch the 09-07/08 affected users (<code>af75b63e</code>, <code>30c3fa79</code>, <code>494bdb70</code>, <code>dd18ad68</code>, <code>995e7936</code>, <code>7fd2f7b4</code>, and <code>8491f3f9</code>) for a clean reconnect.</li>
+</ul>
+
+</body>
+</html>
