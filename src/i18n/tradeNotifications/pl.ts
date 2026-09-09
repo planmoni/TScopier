@@ -7,6 +7,7 @@ export const tradeNotificationsPl: TradeNotificationsTranslations = {
     layeringCompleted: 'LAYERING ZAKOŃCZONY',
     tradesClosed: 'CZĘŚĆ TRANSAKCJI ZAMKNIĘTA',
     reviewRequired: 'SYGNAŁ OCZEKUJĄCY NA ZATWIERDZENIE',
+    manualOverrideReverted: 'Manual trade changes were reverted',
   },
   bodies: {
     executionBatch: 'Otwarto {count} transakcji {side} na {broker} z {channel}.',
@@ -26,6 +27,7 @@ export const tradeNotificationsPl: TradeNotificationsTranslations = {
     tradesClosedGeneric: 'Zamknięto {count} transakcji na {broker} z {channel}.',
     tradesClosedSingle: 'Zamknięto transakcję na {broker} z {channel}.',
     reviewRequired: 'Sygnał z {channel} oczekuje na Twoją akceptację.',
+    manualOverrideReverted: 'TScopier detected a manual SL/TP change made directly on your broker account and restored the signal managed values. To change SL or TP for a copied signal, use Manage Signal in TScopier.',
   },
   sides: {
     buy: 'kupna',
@@ -35,6 +37,9 @@ export const tradeNotificationsPl: TradeNotificationsTranslations = {
   fallbacks: {
     broker: 'Twoim koncie',
     channel: 'Twojego kanału',
+  },
+  actions: {
+    manageSignal: 'Manage Signal',
   },
   tpReason: 'TP{index}',
 }

@@ -86,6 +86,7 @@ export type ApplyReconcileDeps = {
 
 export type ApplyReconcileResult = {
   modified: number
+  modifiedTickets: number[]
   modifyFailed: number
   closed: number
   adopted: number
@@ -98,6 +99,7 @@ export async function applyReconcileActions(
   actions: ReconcileActions,
 ): Promise<ApplyReconcileResult> {
   let modified = 0
+  const modifiedTickets: number[] = []
   let modifyFailed = 0
 
   for (const m of actions.modifies) {
@@ -106,11 +108,11 @@ export async function applyReconcileActions(
       stopLoss: m.stoploss ?? undefined,
       takeProfit: m.takeProfit ?? undefined,
     })
-    if (combined.ok) { modified++; continue }
+    if (combined.ok) { modified++; modifiedTickets.push(m.ticket); continue }
     // If the combined modify was rejected for stops/price, protect the SL alone.
     if (isInvalidStopsRetcode(combined.retcode) && m.stoploss != null && m.takeProfit != null) {
       const slOnly = await deps.fx.orderModify(deps.accountId, deps.platform, { ticket: m.ticket, stopLoss: m.stoploss })
-      if (slOnly.ok) { modified++; continue }
+      if (slOnly.ok) { modified++; modifiedTickets.push(m.ticket); continue }
     }
     modifyFailed++
   }
@@ -125,5 +127,5 @@ export async function applyReconcileActions(
     await deps.adoptOrphan(o).then(() => { adopted++ }).catch(() => {})
   }
 
-  return { modified, modifyFailed, closed, adopted }
+  return { modified, modifiedTickets, modifyFailed, closed, adopted }
 }

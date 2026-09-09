@@ -7,6 +7,7 @@ export const tradeNotificationsAr: TradeNotificationsTranslations = {
     layeringCompleted: 'اكتمل التدرج',
     tradesClosed: 'أُغلقت بعض الصفقات',
     reviewRequired: 'إشارة بانتظار الموافقة',
+    manualOverrideReverted: 'Manual trade changes were reverted',
   },
   bodies: {
     executionBatch: 'فُتحت {count} صفقة {side} على {broker} من {channel}.',
@@ -26,6 +27,7 @@ export const tradeNotificationsAr: TradeNotificationsTranslations = {
     tradesClosedGeneric: 'أُغلقت {count} صفقة على {broker} من {channel}.',
     tradesClosedSingle: 'أُغلقت صفقة على {broker} من {channel}.',
     reviewRequired: 'إشارة من {channel} بانتظار موافقتك.',
+    manualOverrideReverted: 'TScopier detected a manual SL/TP change made directly on your broker account and restored the signal managed values. To change SL or TP for a copied signal, use Manage Signal in TScopier.',
   },
   sides: {
     buy: 'شراء',
@@ -35,6 +37,9 @@ export const tradeNotificationsAr: TradeNotificationsTranslations = {
   fallbacks: {
     broker: 'حسابك',
     channel: 'قناتك',
+  },
+  actions: {
+    manageSignal: 'Manage Signal',
   },
   tpReason: 'TP{index}',
 }

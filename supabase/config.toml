@@ -80,3 +80,6 @@ verify_jwt = true
 
 [functions.signal-review-email]
 verify_jwt = true
+
+[functions.manual-broker-override-email]
+verify_jwt = true

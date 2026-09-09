@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import clsx from 'clsx'
-import { ArrowUpRight, Check, CircleCheck, Layers, Loader2, Pencil, TriangleAlert, X } from 'lucide-react'
+import { ArrowUpRight, Check, CircleCheck, Layers, Loader2, Pencil, RotateCcw, TriangleAlert, X } from 'lucide-react'
 import { useNotifications } from '../../context/NotificationsContext'
 import { useLocale, useT } from '../../context/LocaleContext'
 import { formatRelative } from '../../lib/formatRelative'
@@ -31,6 +31,8 @@ function headlineMeta(headline: TradeNotificationHeadline): {
       return { icon: Check, className: HEADLINE_ICON_CLASS }
     case 'review_required':
       return { icon: TriangleAlert, className: REVIEW_ICON_CLASS }
+    case 'manual_override_reverted':
+      return { icon: RotateCcw, className: REVIEW_ICON_CLASS }
   }
 }
 
@@ -116,9 +118,11 @@ export function NotificationDropdown({ open, onClose }: NotificationDropdownProp
                     const meta = headlineMeta(item.headline)
                     const Icon = meta.icon
                     const isReview = item.headline === 'review_required'
-                    const handleReviewClick = () => {
+                    const actionUrl = isReview ? '/account-trades' : item.actionUrl
+                    const handleNotificationClick = () => {
+                      if (!actionUrl) return
                       onClose()
-                      navigate('/account-trades')
+                      navigate(actionUrl)
                     }
                     const inner = (
                       <div className="flex gap-3 px-4 py-3">
@@ -150,16 +154,21 @@ export function NotificationDropdown({ open, onClose }: NotificationDropdownProp
                           <p className="mt-1 text-sm leading-snug text-neutral-600 dark:text-neutral-300">
                             {item.body}
                           </p>
+                          {item.actionUrl && item.actionLabel ? (
+                            <span className="mt-2 inline-flex text-xs font-semibold text-teal-700 dark:text-teal-300">
+                              {item.actionLabel}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     )
                     return (
                       <li key={item.id} role="none">
-                        {isReview ? (
+                        {actionUrl ? (
                           <button
                             type="button"
                             role="menuitem"
-                            onClick={handleReviewClick}
+                            onClick={handleNotificationClick}
                             className="w-full text-left transition-colors hover:bg-amber-50 dark:hover:bg-amber-950/30"
                           >
                             {inner}

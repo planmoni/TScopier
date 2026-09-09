@@ -58,6 +58,12 @@ export const chromeJa: AppChromeTranslations = {
       stopCopier: 'コピーを一時停止',
       confirmTitle: 'コピーを一時停止',
       confirmBody: 'コピーを再開するまで、シグナルコピー、取引執行、コピーログは停止します。',
+      setupBroker: 'ブローカーのリンク',
+      setupTelegram: 'Telegramへの接続',
+      setupChannels: 'チャンネルの追加',
+      bannerAction: 'セットアップへ進む',
+      bannerText: 'コピーを開始するには、{items}が必要です。',
+      bannerLastSep: '、',
     },
     notifications: {
       title: '通知',

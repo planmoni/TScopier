@@ -17,15 +17,22 @@ describe('isRecoverableTelegramAuthError', () => {
     assert.equal(isRecoverableTelegramAuthError('Timeout while waiting'), true)
   })
 
+  it('treats a wrong phone code as recoverable so one typo does not kill the pending auth', () => {
+    assert.equal(isRecoverableTelegramAuthError('PHONE_CODE_INVALID'), true)
+  })
+
   it('does not treat phone-code expiry as recoverable', () => {
     assert.equal(isRecoverableTelegramAuthError('PHONE_CODE_EXPIRED'), false)
   })
 })
 
 describe('isPhoneCodeFatalAuthError', () => {
-  it('detects expired / invalid codes', () => {
+  it('detects expired codes as fatal', () => {
     assert.equal(isPhoneCodeFatalAuthError('PHONE_CODE_EXPIRED'), true)
-    assert.equal(isPhoneCodeFatalAuthError('PHONE_CODE_INVALID'), true)
+  })
+
+  it('does NOT treat a wrong code as fatal (retryable against the same pending auth)', () => {
+    assert.equal(isPhoneCodeFatalAuthError('PHONE_CODE_INVALID'), false)
   })
 })
 

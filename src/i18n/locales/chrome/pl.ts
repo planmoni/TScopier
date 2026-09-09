@@ -59,6 +59,12 @@ export const chromePl: AppChromeTranslations = {
       confirmTitle: 'Wstrzymać kopiator',
       confirmBody:
         'Kopiowanie sygnałów, wykonywanie transakcji i dzienniki kopiatora zostaną zatrzymane do momentu wznowienia.',
+      setupBroker: 'powiąż brokera',
+      setupTelegram: 'połącz Telegram',
+      setupChannels: 'dodaj kanał',
+      bannerAction: 'Przejdź do konfiguracji',
+      bannerText: 'Aby uruchomić kopiator, {items}.',
+      bannerLastSep: ' i ',
     },
     notifications: {
       title: 'Powiadomienia',

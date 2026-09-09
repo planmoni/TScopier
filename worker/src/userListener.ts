@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { SupabaseClient } from '@supabase/supabase-js'
+import bigInt from 'big-integer'
 import { TelegramClient } from 'telegram'
 import { utils } from 'telegram'
 import { NewMessage } from 'telegram/events'
@@ -9,12 +10,12 @@ import type { EditedMessageEvent } from 'telegram/events/EditedMessage'
 import { Api } from 'telegram/tl'
 import {
   buildClient,
+  tgInvoke,
   isAuthKeyDuplicated,
   isAuthKeyUnregistered,
   isMalformedRpcResult,
   rethrowIfSessionInvalid,
   TelegramSessionInvalidError,
-  tgInvoke,
 } from './telegramClient'
 import {
   authKeyDupDeferredRetryMs,
@@ -310,6 +311,30 @@ function reconnectCooldownMs(): number {
   return Math.max(500, Math.min(120_000, Number(process.env.TELEGRAM_RECONNECT_COOLDOWN_MS ?? 3500)))
 }
 
+/**
+ * Hard cap on a single Telegram connect()/probe inside forceReconnect. A hung
+ * socket must not wedge reconnectInFlight forever (incident 2026-09-07: a wedged
+ * connect left requestReconnect returning the same stuck promise, so the listener
+ * flapped "disconnected but renewing lease anyway" for hours and no hard-reset
+ * could ever run). The underlying promise is NOT cancelled — the cycle just stops
+ * waiting and treats the attempt as failed so retry/exhaust logic can proceed.
+ */
+function telegramConnectTimeoutMs(): number {
+  return Math.max(5_000, Math.min(120_000, Number(process.env.TELEGRAM_CONNECT_TIMEOUT_MS ?? 45_000)))
+}
+
+export async function withTelegramTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+  })
+  try {
+    return await Promise.race([p, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 function malformedRpcResultMaxRecoveries(): number {
   return Math.max(
     1,
@@ -580,6 +605,43 @@ export class UserListener {
       ...opts,
       ownershipEpoch: this.healthOwnershipEpoch,
       leaseAcquiredAt: this.healthLeaseAcquiredAt,
+    })
+  }
+
+  /** Fire-and-forget: send a Telegram self-message (Saved Messages) for human review. */
+  private notifyHumanReviewTelegram(
+    signalId: string,
+    rawMessage: string,
+    parsed: Record<string, unknown>,
+  ): void {
+    const appUrl = process.env.APP_URL || 'https://app.tscopier.ai'
+    const reviewUrl = `${appUrl}/account-trades?review=${signalId}`
+
+    const symbol = String(parsed.symbol ?? '').trim()
+    const action = String(parsed.action ?? '').trim()
+    const entry = parsed.entry_price ?? parsed.entry_zone_low ?? ''
+    const sl = parsed.sl != null ? String(parsed.sl) : ''
+    const tp = Array.isArray(parsed.tp) && parsed.tp.length > 0 ? parsed.tp.join(', ') : ''
+
+    const lines: string[] = ['Signal review required', '']
+    if (symbol) lines.push(`Symbol: ${symbol}`)
+    if (action) lines.push(`Action: ${action}`)
+    if (entry) lines.push(`Entry: ${entry}`)
+    if (sl) lines.push(`SL: ${sl}`)
+    if (tp) lines.push(`TP: ${tp}`)
+    if (rawMessage) { lines.push(''); lines.push(rawMessage) }
+    lines.push('')
+    lines.push(`Review: ${reviewUrl}`)
+    lines.push('(Auto-expires in 2 minutes)')
+
+    const message = lines.join('\n')
+
+    tgInvoke(this.client, new Api.messages.SendMessage({
+      peer: new Api.InputPeerSelf(),
+      message,
+      randomId: bigInt(Date.now()),
+    })).catch((err: unknown) => {
+      console.warn(`[userListener] Telegram review notification failed id=${signalId}: ${err instanceof Error ? err.message : String(err)}`)
     })
   }
 
@@ -1063,7 +1125,14 @@ export class UserListener {
         this.deferredRetryTimer = null
       }
       if (this.reconnectInFlight) {
-        await this.reconnectInFlight.catch(() => {})
+        // A wedged connect can leave reconnectInFlight pending forever; never
+        // let stop() hang on it (incident 2026-09-07 — a stuck reconnect blocked
+        // disconnectTelegramSession and the lease-renew hard-reset path).
+        await withTelegramTimeout(
+          this.reconnectInFlight.catch(() => {}),
+          telegramConnectTimeoutMs(),
+          `listener stop await reconnect ${this.userId}`,
+        ).catch(() => {})
       }
       await this.persistSessionIfChanged()
       this.connectionTrace('disconnect_start', { source: 'stop' })
@@ -1466,7 +1535,12 @@ export class UserListener {
       try {
         this.clientGeneration += 1
         this.connectionTrace('connect_start', { source: 'getDialogs', cycleId, attempt: attempt + 1 })
-        await this.client.connect()
+        await withTelegramTimeout(
+          this.client.connect(),
+          telegramConnectTimeoutMs(),
+          `telegram connect getDialogs ${this.userId}`,
+        )
+        if (this.stopping) { try { await this.client.disconnect() } catch { /* ignore */ } break }
         this.isConnected = true
         const dialogs = await this.fetchAllDialogs()
         this.connectionTrace('recovery_complete', { source: 'getDialogs', cycleId, attempt: attempt + 1 })
@@ -2862,6 +2936,7 @@ export class UserListener {
     }
     if (aiMeta?.reviewRequired) {
       notifyHumanReviewEmail(signalId)
+      this.notifyHumanReviewTelegram(signalId, rawMessage, parseResult.parsed as unknown as Record<string, unknown>)
       void persistListenerEvent(this.supabase, {
         userId: this.userId,
         eventType: 'ai_parse_review_required',
@@ -4564,9 +4639,19 @@ export class UserListener {
       try {
         this.clientGeneration += 1
         this.connectionTrace('connect_start', { source: reason, cycleId, attempt: attempt + 1 })
-        await this.client.connect()
+        await withTelegramTimeout(
+          this.client.connect(),
+          telegramConnectTimeoutMs(),
+          `telegram connect ${this.userId}`,
+        )
+        if (this.stopping) { try { await this.client.disconnect() } catch { /* ignore */ } return }
         this.connectionTrace('probe_start', { source: reason, cycleId, attempt: attempt + 1 })
-        await tgInvoke(this.client, new Api.updates.GetState())
+        await withTelegramTimeout(
+          tgInvoke(this.client, new Api.updates.GetState()),
+          telegramConnectTimeoutMs(),
+          `telegram probe ${this.userId}`,
+        )
+        if (this.stopping) { try { await this.client.disconnect() } catch { /* ignore */ } return }
         this.isConnected = true
         this.resetTelegramBackoffState()
         this.lastSuccessfulPollAt = Date.now()
@@ -4586,7 +4671,19 @@ export class UserListener {
         )
         if (isAuthKeyUnregistered(err)) return
         if (!isAuthKeyDuplicated(err)) {
-          // Transient network errors: keep trying remaining delays.
+          // Transient network errors / connect timeouts: keep trying remaining
+          // delays. Disconnect first so a connect() that timed out but later
+          // completes in the background cannot double-connect on the next
+          // attempt (AUTH_KEY_DUPLICATED risk).
+          this.connectionTrace('disconnect_start', { source: `${reason}:retry_${attempt + 1}`, cycleId })
+          try {
+            await withTelegramTimeout(
+              this.client.disconnect(),
+              telegramConnectTimeoutMs(),
+              `telegram disconnect ${this.userId}`,
+            )
+          } catch { /* ignore */ }
+          this.connectionTrace('disconnect_complete', { source: `${reason}:retry_${attempt + 1}`, cycleId })
           continue
         }
         incMetric('auth_key_duplicated')
@@ -4596,7 +4693,13 @@ export class UserListener {
           + ` for ${this.userId} cycle=${cycleId}`,
         )
         this.connectionTrace('disconnect_start', { source: `${reason}:retry_${attempt + 1}`, cycleId })
-        try { await this.client.disconnect() } catch { /* ignore */ }
+        try {
+          await withTelegramTimeout(
+            this.client.disconnect(),
+            telegramConnectTimeoutMs(),
+            `telegram disconnect ${this.userId}`,
+          )
+        } catch { /* ignore */ }
         this.connectionTrace('disconnect_complete', { source: `${reason}:retry_${attempt + 1}`, cycleId })
       }
     }
@@ -4664,7 +4767,7 @@ export class UserListener {
       }
       throw err
     }
-    if (!this.isConnected) {
+    if (!this.isConnected || this.stopping) {
       return
     }
     await this.refreshChannelSubscription()

@@ -454,14 +454,9 @@ function normalizeManualSettings(
   const closeWorseEntries = (j as Record<string, unknown>).close_worse_entries === true
   const closeWorseEntriesPips = Math.max(0, readNumber('close_worse_entries_pips', DEFAULT_MANUAL_SETTINGS.close_worse_entries_pips ?? 30))
   const singleTpTargetRaw = String((j as Record<string, unknown>).single_tp_target ?? 'farthest').toLowerCase()
+  const tpMatch = singleTpTargetRaw.match(/^tp(\d+)$/)
   const singleTpTarget: ManualSettings['single_tp_target'] =
-    singleTpTargetRaw === 'tp1'
-      ? 'tp1'
-      : singleTpTargetRaw === 'tp2'
-        ? 'tp2'
-        : singleTpTargetRaw === 'tp3'
-          ? 'tp3'
-          : 'farthest'
+    tpMatch ? (`tp${tpMatch[1]}` as `tp${number}`) : 'farthest'
 
   // Manual control: keep whatever the user saved. Only seed an equal split when
   // there is literally nothing enabled with a positive percent (empty / legacy row).
@@ -3479,9 +3474,13 @@ export function AccountConfigPage() {
                                 }}
                                 options={[
                                   { value: 'farthest', label: cm.risk.singleTpTargetFarthest },
-                                  { value: 'tp1', label: cm.risk.singleTpTargetTp1 },
-                                  { value: 'tp2', label: cm.risk.singleTpTargetTp2 },
-                                  { value: 'tp3', label: cm.risk.singleTpTargetTp3 },
+                                  ...(channelManualSettings.tp_lots ?? DEFAULT_MANUAL_TP_LOTS)
+                                    .map((row, i) => ({ row, origIdx: i }))
+                                    .filter(({ row }) => row.enabled !== false)
+                                    .map(({ row, origIdx }) => ({
+                                      value: `tp${origIdx + 1}` as const,
+                                      label: row.label?.trim() || `TP${origIdx + 1}`,
+                                    })),
                                 ]}
                               />
                               {singleTpLotBreakdownText ? (

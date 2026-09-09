@@ -47,6 +47,8 @@ export const copierEngineAr: CopierEngineBundleTranslations = {
     sendCode: 'إرسال الرمز',
     verificationCode: 'رمز التحقق',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'افتح تطبيق Telegram على هاتفك وابحث عن رسالة من Telegram تحتوي على رمز الدخول المكوّن من 5 أرقام. لا يُرسل الرمز عبر الرسائل النصية.',
+    sendNewCode: 'إرسال رمز جديد',
     sentTo: 'أُرسل إلى {phone}',
     twoFaPassword: 'كلمة مرور 2FA',
     twoFaPlaceholder: 'كلمة مرور Telegram',

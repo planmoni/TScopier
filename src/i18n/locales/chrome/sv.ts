@@ -58,6 +58,12 @@ export const chromeSv: AppChromeTranslations = {
       stopCopier: 'Pausa kopieraren',
       confirmTitle: 'Pausa kopieraren',
       confirmBody: 'Signalkopiering, orderutförande och kopieringsloggar stoppas tills du återupptar.',
+      setupBroker: 'koppla en broker',
+      setupTelegram: 'anslut Telegram',
+      setupChannels: 'lägg till en kanal',
+      bannerAction: 'Gå till installationen',
+      bannerText: 'För att starta kopieraren, {items}.',
+      bannerLastSep: ' och ',
     },
     notifications: {
       title: 'Notiser',

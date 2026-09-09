@@ -43,7 +43,7 @@ export interface ManualSettings {
   fixed_lot?: number
   dynamic_balance_percent?: number
   tp_lots?: ManualTpLot[]
-  single_tp_target?: 'tp1' | 'tp2' | 'tp3' | 'farthest'
+  single_tp_target?: `tp${number}` | 'farthest'
   multi_trade_leg_percent?: number
   /**
    * Optional cap on simultaneous market orders per entry burst. When set below

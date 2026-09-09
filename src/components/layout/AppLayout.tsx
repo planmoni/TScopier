@@ -14,6 +14,7 @@ import { LanguageSwitcher } from '../auth/LanguageSwitcher'
 import { HelpSidebarNav } from './HelpSidebarNav'
 import { NotificationBell } from './NotificationBell'
 import { CopierPauseToggle } from './CopierPauseToggle'
+import { AppCopierSetupBanner } from './AppCopierSetupBanner'
 import { UserMenuDropdown } from './UserMenuDropdown'
 import { UserAvatar } from './UserAvatar'
 import { DashboardKeepAlive } from './DashboardKeepAlive'
@@ -544,6 +545,7 @@ export function AppLayout({ onAssistantTrigger }: AppLayoutProps) {
             'lg:pt-0',
           )}
         >
+          {!deferAppBootstrap && <AppCopierSetupBanner />}
           <DashboardKeepAlive />
           {!deferAppBootstrap && !onDashboardRoute && <Outlet />}
         </main>

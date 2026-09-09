@@ -43,6 +43,7 @@ import { hasFxsocketConfigured } from './fxsocketClient'
 import { apiForFxsocketAccount, loadPlatformByFxsocketId, type PlatformByFxsocketId } from './mtApiByAccount'
 import { fetchBrokerOrdersByTicket } from './channelStopApply'
 import { brokerSessionUuid } from './tradeExecutor/helpers'
+import { passiveDriftSweepSnapshot } from './manualBrokerOverrideNotification'
 
 export type FreshReconcileTargetsArgs = {
   anchorSignalId: string
@@ -530,7 +531,7 @@ export async function sweepOpenBasketsForReconcileDrift(
       familyTrades,
       signalTps,
       tpLots: manual.tp_lots,
-      virtualPendingsSnapshot: null,
+      virtualPendingsSnapshot: passiveDriftSweepSnapshot(),
       nImmCwe: 0,
       overrideTp: null,
       lastError: 'Drift sweep: open legs out of sync with channel SL/TP ladder',

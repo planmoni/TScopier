@@ -77,6 +77,8 @@ export interface NavTranslations {
     setupTelegram?: string
     setupChannels?: string
     bannerAction?: string
+    bannerText?: string
+    bannerLastSep?: string
   }
   notifications: {
     title: string
@@ -1144,6 +1146,8 @@ export interface CopierEnginePageTranslations {
   verificationCode: string
   verificationPlaceholder: string
   sentTo: string
+  tgConnectCodeAppHint: string
+  sendNewCode: string
   twoFaPassword: string
   twoFaPlaceholder: string
   twoFaRequired: string

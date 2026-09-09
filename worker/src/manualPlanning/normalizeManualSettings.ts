@@ -113,14 +113,9 @@ export function normalizeManualSettingsForExecution(
     ? j.predefined_tp_pips.map(Number).filter(Number.isFinite)
     : [20, 40, 60]
   const singleTpTargetRaw = String(j.single_tp_target ?? 'farthest').toLowerCase()
+  const tpMatch = singleTpTargetRaw.match(/^tp(\d+)$/)
   const singleTpTarget: ManualSettings['single_tp_target'] =
-    singleTpTargetRaw === 'tp1'
-      ? 'tp1'
-      : singleTpTargetRaw === 'tp2'
-        ? 'tp2'
-        : singleTpTargetRaw === 'tp3'
-          ? 'tp3'
-          : 'farthest'
+    tpMatch ? (`tp${tpMatch[1]}` as `tp${number}`) : 'farthest'
 
   return {
     ...(j as ManualSettings),

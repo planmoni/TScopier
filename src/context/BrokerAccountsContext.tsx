@@ -247,8 +247,3 @@ export function useBrokerAccounts(): BrokerAccountsContextValue {
   }
   return ctx
 }
-
-/** Returns null when used outside BrokerAccountsProvider (e.g. AppTopBanners). */
-export function useBrokerAccountsOptional(): BrokerAccountsContextValue | null {
-  return useContext(BrokerAccountsContext)
-}

@@ -404,8 +404,14 @@ export class UserSessionManager {
         + ` user=${userId} — kicking reconnect in background`,
       )
       listener.requestReconnectIfDisconnected('lease_renew_disconnected')
+    } else {
+      // Only reset the counter when the listener is actually connected — an
+      // unconditional delete here wiped the count every tick, so the
+      // hard-reset after healAfter failed ticks never fired and a wedged
+      // listener flapped "disconnected but renewing" forever (incident
+      // 2026-09-07, users af75b63e/30c3fa79/494bdb70/dd18ad68).
+      this.disconnectedRenewTicks.delete(userId)
     }
-    this.disconnectedRenewTicks.delete(userId)
 
     try {
       const result = await withTimeout(

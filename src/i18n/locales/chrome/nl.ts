@@ -58,6 +58,12 @@ export const chromeNl: AppChromeTranslations = {
       stopCopier: 'Copier pauzeren',
       confirmTitle: 'Copier pauzeren',
       confirmBody: 'Signaalkopiëren, trade-uitvoering en copierlogs stoppen totdat je hervat.',
+      setupBroker: 'koppel een broker',
+      setupTelegram: 'verbind Telegram',
+      setupChannels: 'voeg een kanaal toe',
+      bannerAction: 'Ga naar instellingen',
+      bannerText: 'Om de copier te starten, {items}.',
+      bannerLastSep: ' en ',
     },
     notifications: {
       title: 'Meldingen',

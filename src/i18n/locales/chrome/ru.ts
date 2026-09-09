@@ -59,6 +59,12 @@ export const chromeRu: AppChromeTranslations = {
       confirmTitle: 'Приостановить копир',
       confirmBody:
         'Копирование сигналов, исполнение сделок и логи копира будут остановлены, пока вы не возобновите работу.',
+      setupBroker: 'подключите брокера',
+      setupTelegram: 'подключите Telegram',
+      setupChannels: 'добавьте канал',
+      bannerAction: 'Перейти к настройкам',
+      bannerText: 'Чтобы запустить копир, {items}.',
+      bannerLastSep: ' и ',
     },
     notifications: {
       title: 'Уведомления',

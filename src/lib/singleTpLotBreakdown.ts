@@ -3,7 +3,7 @@
  * Mirrors worker/src/manualPlanning/partialTpSchedule.ts planSinglePartialTps sizing rules.
  */
 
-export type SingleTpTarget = 'tp1' | 'tp2' | 'tp3' | 'farthest'
+export type SingleTpTarget = `tp${number}` | 'farthest'
 
 export type SingleTpLotSlice = {
   tpLabel: string
@@ -23,8 +23,8 @@ export type SingleTpLotBreakdownArgs = {
 
 function normalizeSingleTpTarget(raw: unknown): SingleTpTarget {
   const v = String(raw ?? 'farthest').toLowerCase()
-  if (v === 'tp1' || v === 'tp2' || v === 'tp3') return v
-  return 'farthest'
+  const m = v.match(/^tp(\d+)$/)
+  return m ? (`tp${m[1]}` as SingleTpTarget) : 'farthest'
 }
 
 function resolveSingleTpTargetIndex(args: {
@@ -34,9 +34,11 @@ function resolveSingleTpTargetIndex(args: {
   const { finalTps } = args
   if (!Array.isArray(finalTps) || finalTps.length === 0) return -1
   const target = normalizeSingleTpTarget(args.singleTpTarget)
-  if (target === 'tp1') return 0
-  if (target === 'tp2') return Math.min(1, finalTps.length - 1)
-  if (target === 'tp3') return Math.min(2, finalTps.length - 1)
+  const tpMatch = target.match(/^tp(\d+)$/)
+  if (tpMatch) {
+    const idx = Number(tpMatch[1]) - 1
+    return Math.min(Math.max(0, idx), finalTps.length - 1)
+  }
   // Preview has no buy/sell — same as worker when isBuy is undefined.
   return finalTps.length - 1
 }

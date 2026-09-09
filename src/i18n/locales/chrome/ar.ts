@@ -58,6 +58,12 @@ export const chromeAr: AppChromeTranslations = {
       stopCopier: 'إيقاف النسخ مؤقتًا',
       confirmTitle: 'إيقاف النسخ مؤقتًا',
       confirmBody: 'حتى تستأنف، يتوقف نسخ الإشارات وتنفيذ الصفقات وسجلات الناسخ.',
+      setupBroker: 'اربط وسيطًا',
+      setupTelegram: 'اربط Telegram',
+      setupChannels: 'أضف قناة',
+      bannerAction: 'الانتقال إلى الإعداد',
+      bannerText: 'لبدء النسخ، يرجى {items}.',
+      bannerLastSep: ' و ',
     },
     notifications: {
       title: 'الإشعارات',

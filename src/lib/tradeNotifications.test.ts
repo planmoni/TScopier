@@ -315,3 +315,39 @@ describe('reviewNotificationFromSignal', () => {
     assert.equal(item.symbol, null)
   })
 })
+
+describe('manual broker override warning notifications', () => {
+  it('formats manual broker override warning with Manage Signal CTA link and dedupes the basket event', () => {
+    const rows = [
+      baseRow({
+        id: 'manual-1',
+        action: 'broker_manual_stop_override_reverted',
+        signal_id: 'anchor-1',
+        request_payload: {
+          anchor_signal_id: 'anchor-1',
+          symbol: 'XAUUSD',
+          manage_signal_url: '/manage-signals?edit=anchor-1',
+          cta_label: 'Manage Signal',
+        },
+      }),
+      baseRow({
+        id: 'manual-2',
+        action: 'broker_manual_stop_override_reverted',
+        signal_id: 'anchor-1',
+        created_at: '2026-06-05T12:00:01.000Z',
+        request_payload: {
+          anchor_signal_id: 'anchor-1',
+          symbol: 'XAUUSD',
+          manage_signal_url: '/manage-signals?edit=anchor-1',
+          cta_label: 'Manage Signal',
+        },
+      }),
+    ]
+    const notifications = tradeNotificationsFromLogs(rows, tradeNotificationsEn, ctx)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0]!.headline, 'manual_override_reverted')
+    assert.equal(notifications[0]!.title, 'Manual trade changes were reverted')
+    assert.equal(notifications[0]!.actionUrl, '/manage-signals?edit=anchor-1')
+    assert.equal(notifications[0]!.actionLabel, 'Manage Signal')
+  })
+})

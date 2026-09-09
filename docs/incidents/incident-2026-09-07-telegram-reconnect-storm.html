@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color: #1e293b; font-size: 10.5px; line-height: 1.5; margin: 0; }
+  h1 { font-size: 19px; margin: 0 0 2px 0; color: #0f172a; }
+  .subtitle { color: #64748b; font-size: 11px; margin-bottom: 12px; }
+  h2 { font-size: 12.5px; margin: 16px 0 6px 0; padding-bottom: 3px; border-bottom: 2px solid #2563eb; color: #0f172a; }
+  table { border-collapse: collapse; width: 100%; }
+  code { font-family: Menlo, Consolas, monospace; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; font-size: 9.5px; }
+  .meta { width: 100%; margin-bottom: 6px; }
+  .meta td { padding: 4px 8px; vertical-align: top; border: 1px solid #e2e8f0; }
+  .meta .k { color: #64748b; font-weight: bold; width: 90px; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.5px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: bold; font-size: 9.5px; }
+  .pill.green { background: #dcfce7; color: #15803d; }
+  .pill.red { background: #fee2e2; color: #b91c1c; }
+  .pill.amber { background: #fef3c7; color: #b45309; }
+  .box { border-left: 4px solid #2563eb; background: #eff6ff; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; }
+  .box.green { border-left-color: #16a34a; background: #f0fdf4; }
+  .box.amber { border-left-color: #d97706; background: #fffbeb; }
+  ol, ul { margin: 4px 0 8px 18px; padding: 0; }
+  li { margin-bottom: 4px; }
+  .tbl { margin-top: 4px; }
+  .tbl th { background: #f1f5f9; text-align: left; padding: 4px 8px; border: 1px solid #e2e8f0; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.4px; color: #475569; }
+  .tbl td { padding: 4px 8px; border: 1px solid #e2e8f0; vertical-align: top; }
+</style>
+</head>
+<body>
+
+<h1>Telegram reconnect storm blocks user logins and code delivery</h1>
+<div class="subtitle">Incident report &middot; TScopier worker + Telegram auth UI &middot; 2026-09-07</div>
+
+<table class="meta">
+  <tr>
+    <td class="k">Severity</td><td><span style="color:#b91c1c;font-weight:bold;">High</span></td>
+    <td class="k">Status</td><td><span class="pill amber">Fixed — awaiting deploy</span></td>
+  </tr>
+  <tr>
+    <td class="k">Dates</td><td>Reported 2026-09-07 (user Marcin Adamczyk, <code>mrfun1981@gmail.com</code>); second similar report for <code>collinsvaldes63@gmail.com</code></td>
+    <td class="k">Affected</td><td>4 production users in lockstep (<code>af75b63e</code>, <code>30c3fa79</code>, <code>494bdb70</code>, <code>dd18ad68</code>)</td>
+  </tr>
+  <tr>
+    <td class="k">Component</td><td><code>worker/src/sessionManager.ts</code>, <code>worker/src/userListener.ts</code>, <code>worker/src/telegramAuthRecovery.ts</code>, <code>src/components/telegram/TelegramConnectFlow.tsx</code></td>
+    <td class="k">Root cause</td><td>Unbounded reconnect + a heal counter wiped every tick &rarr; permanent flapping loop; <code>PHONE_CODE_INVALID</code> needlessly fatal</td>
+  </tr>
+</table>
+
+<h2>1. Executive summary (plain English)</h2>
+<div class="box green">
+<p>What this incident is about, in plain English:</p>
+<ul>
+  <li>A user told us he could not connect his Telegram account. While investigating, we found the same problem was affecting three other accounts.</li>
+  <li>Behind the scenes, each of these accounts' listeners was <strong>flapping</strong> &mdash; dropping its connection to Telegram and trying to reconnect every twenty seconds, for hours, without ever settling into a stable "connected" state. A watchdog probe (a lightweight ping to Telegram every 30s) correctly detected that the connections had gone zombie and asked the worker to reconnect &mdash; but the reconnect itself had no time limit and got stuck, so every new attempt was handed the same stuck one.</li>
+  <li>While a listener was flapping, the app could not even request a fresh login code: the code requests hung and timed out after 90 seconds (this happened 7 times for one user alone).</li>
+  <li>Three separate things were wrong: (1) a counting bug meant the safety mechanism that should have restarted a stuck listener never fired; (2) the reconnect step had no time limit, so a network hang could freeze it permanently; (3) a single mistyped login code was treated as a dead end and forced the user to restart the whole login, even though Telegram allows retrying the same code.</li>
+  <li>We fixed all three in the worker and improved the on-screen guidance so users know the login code arrives inside the Telegram app, not as a text message.</li>
+  <li>Expected result after the fix is deployed: a stuck listener recovers or is cleanly restarted within about a minute instead of flapping for hours, and a mistyped code no longer forces a full restart.</li>
+</ul>
+</div>
+
+<h2>1b. What "flapping" means here</h2>
+<div class="box">
+<p><strong>What TScopier does:</strong> TScopier listens to trading-signal Telegram channels on behalf of each user and copies the signals to their broker. For each connected user, our worker runs a "listener" &mdash; a background connection to Telegram that stays open so it can catch new signals the moment they are posted.</p>
+<p><strong>What flapping is:</strong> "Flapping" is when that connection drops and reconnects over and over without ever staying connected. A listener briefly drops for many ordinary reasons (a network blip, Telegram being slow), and it is normal for it to reconnect a second or two later. In this incident the reconnect attempt got <em>stuck</em> (it waited forever instead of failing fast), so the listener never actually reconnected, and the twenty-second health-check kept finding it broken and kept kicking it &mdash; hours of on/off flapping.</p>
+<p><strong>Why it matters to the user:</strong> While flapping, the user's copier engine looks offline, and &mdash; worse &mdash; the same stuck reconnect also blocked the login flow, so the user could not even request a new verification code to reconnect their account. Flapping is a <em>symptom</em>; the underlying causes are the two bugs in section 4 (a counter that never accumulated, and a reconnect with no time limit).</p>
+</div>
+
+<h2>1c. The story: what happened, in order</h2>
+<div class="box">
+<p>This is the whole incident told as a single, plain-English narrative &mdash; from the first report to where things stand now.</p>
+<ol>
+  <li><strong>The report.</strong> On 2026-09-07 a user, Marcin Adamczyk (<code>mrfun1981@gmail.com</code>), told us he could not connect his Telegram account. A second user reported the same problem. This looked at first like a login problem, so that is where we started looking.</li>
+  <li><strong>What we found in the logs.</strong> His login had actually worked earlier that day &mdash; at 15:38 he connected successfully using the QR-code method, and our worker began listening to 27 of his channels. But three minutes later the watchdog noticed his connection had gone quiet and asked the worker to reconnect. That reconnect never finished.</li>
+  <li><strong>The reconnect got stuck.</strong> A watchdog probe every 30 seconds tests the connection by calling <code>updates.GetState</code> &mdash; a lightweight ping to Telegram. Two consecutive failures mean the socket is a zombie: it looks open, but Telegram is not responding. The probe failed twice, so the watchdog asked the worker to reconnect. That reconnect tried to open a fresh connection to Telegram, but Telegram did not answer, and the code had no time limit, so it waited forever. From that moment the listener was stuck half-connected: the health-check ran every twenty seconds, found it still broken, and tried again &mdash; but every "try again" was handed the same stuck attempt instead of starting a fresh one. The account flapped like this for hours.</li>
+  <li><strong>The safety net was also broken.</strong> Normally, after about three failed reconnect attempts the worker gives up on that listener and restarts it cleanly, which would have fixed everything within a minute. But a counting bug meant the failure counter was reset to zero on every check, so the count could never reach three and the restart never happened.</li>
+  <li><strong>Login then became impossible.</strong> While the listener was stuck, any attempt to request a new login code hung too &mdash; the worker could not reach Telegram at all &mdash; and timed out after 90 seconds. This happened seven times. So the user was caught in the worst of both worlds: he was not connected, and he could not reconnect.</li>
+  <li><strong>It was never just him.</strong> The same flapping was happening to other accounts in lockstep, which told us the cause was on our worker's side, not something the user had done. As of 2026-09-08, six accounts were flapping and the storm was still live in production.</li>
+  <li><strong>Separately, the login flow punished a simple typo.</strong> Even when a code did arrive (inside the Telegram app, not as an SMS), one wrong digit destroyed the whole login and forced a fresh start &mdash; even though Telegram allows retrying the same code. This made an already confusing experience much more painful.</li>
+  <li><strong>What we fixed.</strong> (a) The failure counter now accumulates while a listener is broken, so a stuck listener is cleanly restarted after about a minute. (b) Every step of reconnecting now has a 45-second time limit, so nothing can hang forever &mdash; and stopping a listener can no longer be blocked either. (c) A wrong login code is now retryable instead of fatal. (d) The on-screen guidance now makes it unmissable that the code arrives inside the Telegram app, and always offers a "Send a new code" action.</li>
+  <li><strong>Where it stands now.</strong> The fixes are written, tested (48 worker tests, 2 frontend tests, typechecks and lint all green), reviewed, and committed to the <code>staging</code> branch. They are not yet deployed, so the storm is still affecting production. The moment the worker deploys to staging (then production), the flapping should stop and affected users should be able to connect again &mdash; using the QR method, or by phone and checking the Telegram app for the code.</li>
+</ol>
+</div>
+
+<h2>2. Issue encountered</h2>
+<ul>
+  <li>2026-09-07, production: user <code>mrfun1981@gmail.com</code> (Marcin Adamczyk, Supabase id <code>af75b63e-7202-4b40-a7bf-2115535dcea1</code>) reported he could not connect his Telegram account. A second user (<code>collinsvaldes63@gmail.com</code>) reported the same symptom.</li>
+  <li>Investigation of production Railway logs showed the same four users (<code>af75b63e</code>, <code>30c3fa79</code>, <code>494bdb70</code>, <code>dd18ad68</code>) emitting <code>[sessionManager] listener disconnected but renewing lease anyway</code> every ~20 seconds for hours &mdash; a reconnect storm that never healed on its own. The storm is <strong>still ongoing at the time of writing</strong> (2026-09-08), and has since spread to 6 users (<code>995e7936</code>, <code>7fd2f7b4</code> joined) &mdash; confirming the fix must be deployed to stop it.</li>
+  <li>While flapping, every <code>send_code</code> request from these users hung and timed out after 90 seconds with <code>AUTH_OPERATION_TIMEOUT</code> (observed 7 times for <code>af75b63e</code> between 16:13 and 19:08 UTC).</li>
+  <li>The app returned <code>delivery=app</code> on every successful code request: the login code goes to the user's Telegram app, not to SMS, and Telegram offered no fallback (<code>nextDelivery=absent</code>, <code>canResend=false</code>).</li>
+</ul>
+
+<h2>2b. Evidence from production logs</h2>
+<p>The following are verbatim excerpts from production Railway logs (environment <code>25cc1235</code>, filter <code>af75b63e</code>). Timestamps are UTC.</p>
+
+<div class="box">
+<p><strong>1. The reconnect storm (sample of the 20-second cadence):</strong></p>
+<code>
+[2026-09-07 19:57:12] [sessionManager] listener disconnected but renewing lease anyway user=af75b63e-... &mdash; kicking reconnect in background<br>
+[2026-09-07 19:57:30] [sessionManager] listener disconnected but renewing lease anyway user=af75b63e-... &mdash; kicking reconnect in background<br>
+[2026-09-07 19:57:49] [sessionManager] listener disconnected but renewing lease anyway user=af75b63e-... &mdash; kicking reconnect in background<br>
+[2026-09-07 19:58:09] [sessionManager] listener disconnected but renewing lease anyway user=af75b63e-... &mdash; kicking reconnect in background<br>
+[2026-09-07 19:58:32] [sessionManager] listener disconnected but renewing lease anyway user=af75b63e-... &mdash; kicking reconnect in background
+</code>
+<p style="margin-top:6px;">The same line repeats every ~20s for hours. As of 2026-09-08 06:32Z it is still repeating (51+ occurrences in the sampled window for this user alone).</p>
+</div>
+
+<div class="box">
+<p><strong>2. Codes were issued but the user never entered one (delivery = Telegram app, no fallback):</strong></p>
+<code>
+[2026-09-07 14:53:21] [authService] event=send_code_api_ok userId=af75b63e-... responseType=auth.SentCode delivery=app deliveryType=auth.SentCodeTypeApp nextDelivery= nextDeliveryType=absent timeoutPresent=false canResend=false codeLength=5<br>
+[2026-09-07 14:56:10] [authService] event=send_code_api_ok userId=af75b63e-... delivery=app ... nextDeliveryType=absent ... canResend=false<br>
+[2026-09-07 15:38:09] [authService] event=send_code_api_ok userId=af75b63e-... delivery=app ... nextDeliveryType=absent ... canResend=false
+</code>
+<p style="margin-top:6px;">No <code>verify_code</code> / <code>sign_in</code> event exists for this user &mdash; the code was never entered.</p>
+</div>
+
+<div class="box">
+<p><strong>3. The watchdog correctly detected a zombie, but the reconnect itself got stuck:</strong></p>
+<code>
+[2026-09-07 15:41:00] [watchdog] probe failed (1/2) for af75b63e-...: 401: AUTH_KEY_UNREGISTERED (caused by updates.GetState)<br>
+[2026-09-07 15:41:30] [watchdog] probe failed (2/2) for af75b63e-...: 401: AUTH_KEY_UNREGISTERED (caused by updates.GetState)<br>
+[2026-09-07 15:41:30] [userListener] force reconnect for af75b63e-... reason=watchdog cycle=0286e97f&nbsp;&nbsp;&nbsp;&nbsp;&larr; LAST force reconnect ever logged for this user<br>
+[2026-09-07 15:49:59] [watchdog] probe failed (1/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.<br>
+[2026-09-07 15:50:29] [watchdog] probe failed (2/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.<br>
+[2026-09-07 15:50:59] [watchdog] probe failed (3/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.<br>
+[2026-09-07 15:51:29] [watchdog] probe failed (4/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.<br>
+[2026-09-07 15:51:59] [watchdog] probe failed (5/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.<br>
+[2026-09-07 15:52:29] [watchdog] probe failed (6/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.<br>
+[2026-09-07 15:52:59] [watchdog] probe failed (7/2) for af75b63e-...: Cannot send requests while disconnected. Please reconnect.
+</code>
+<p style="margin-top:6px;">The auth key was revoked (<code>AUTH_KEY_UNREGISTERED</code>), the watchdog caught it in two probes (30s each), and triggered a force reconnect. But <code>client.connect()</code> had no timeout and Telegram did not answer, so the reconnect hung forever. After 15:41:30 no new force reconnect ever ran &mdash; the same stuck promise was returned to every subsequent request. The client was now fully dead (<code>Cannot send requests while disconnected</code>), probes kept failing (counting up to 8/2 and beyond), but nothing could restart it.</p>
+</div>
+
+<div class="box">
+<p><strong>4. The user's only successful connection was via QR, then the reconnect wedged:</strong></p>
+<code>
+[2026-09-07 15:38:58] [authService] QR signIn completed user=af75b63e-... &mdash; calling finalizeAuth<br>
+[2026-09-07 15:39:00] [authService] event=finalize_auth_complete userId=af75b63e-... sessionId=[redacted]<br>
+[2026-09-07 15:41:30] [userListener] force reconnect for af75b63e-... reason=watchdog cycle=0286e97f&nbsp;&nbsp;&nbsp;&nbsp;&larr; LAST force reconnect ever logged for this user
+</code>
+<p style="margin-top:6px;">After 15:41:30 no <code>force reconnect</code> ever runs again for this user &mdash; the wedged <code>reconnectInFlight</code> made every later reconnect request a no-op (it returned the same stuck promise).</p>
+</div>
+
+<div class="box">
+<p><strong>5. Login-code requests then hung and timed out at 90s (7 occurrences):</strong></p>
+<code>
+[2026-09-07 16:14:40] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90181<br>
+[2026-09-07 16:16:20] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90168<br>
+[2026-09-07 18:09:46] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90172<br>
+[2026-09-07 18:11:23] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90164<br>
+[2026-09-07 19:04:49] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90183<br>
+[2026-09-07 19:08:34] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90173<br>
+[2026-09-07 19:10:20] [authService] event=send_code_timeout userId=af75b63e-... totalTimeMs=90164
+</code>
+<p style="margin-top:6px;">Each attempt never reached Telegram &mdash; the worker could not connect at all.</p>
+</div>
+
+<div class="box">
+<p><strong>6. Storm breadth (sample counts, 2026-09-08 ~06:30Z):</strong></p>
+<code>
+af75b63e x18&nbsp;&nbsp;&nbsp;494bdb70 x17&nbsp;&nbsp;&nbsp;dd18ad68 x17&nbsp;&nbsp;&nbsp;30c3fa79 x17&nbsp;&nbsp;&nbsp;995e7936 x17&nbsp;&nbsp;&nbsp;7fd2f7b4 x17
+</code>
+<p style="margin-top:6px;">Six accounts flapping in lockstep, several hours after the report &mdash; a worker-wide symptom, not a user-specific mistake.</p>
+</div>
+
+<h2>3. Affected user(s)</h2>
+<table class="tbl">
+  <tr><th>User</th><th>Supabase id</th><th>What was observed</th></tr>
+  <tr><td>mrfun1981@gmail.com (Marcin Adamczyk)</td><td><code>af75b63e-7202-4b40-a7bf-2115535dcea1</code></td><td>Connected via QR at 15:38; session later dropped; reconnect wedged; flapped for hours; 3 codes issued (never entered), 7 timeouts</td></tr>
+  <tr><td>collinsvaldes63@gmail.com</td><td><code>215b1c69-2a93-4f09-b07d-6e04840f2038</code></td><td>4 codes issued with <code>delivery=app</code>, never entered; pending auth expired 4 times; QR login also failed with "Cannot send requests while disconnected"</td></tr>
+  <tr><td>3 other users</td><td><code>30c3fa79</code>, <code>494bdb70</code>, <code>dd18ad68</code></td><td>Same reconnect storm in lockstep (worker-wide symptom, not user-specific)</td></tr>
+  <tr><td>2 more users</td><td><code>995e7936</code>, <code>7fd2f7b4</code></td><td>Joined the same storm by 2026-09-08 (6 accounts flapping in total)</td></tr>
+</table>
+<p>No trades were lost &mdash; trade execution runs on a separate service. The impact was signal-listening downtime and blocked Telegram logins for the affected accounts.</p>
+
+<h2>4. Root cause</h2>
+<div class="box green">
+<p><strong>How the system is meant to work:</strong> Every twenty seconds the worker checks each user's listener and renews a "lease" that says "I am the copy handling this Telegram account, nobody else should touch it." If a listener is not connected, the worker tries to reconnect it; and after a few failed tries it is <em>supposed</em> to tear the listener down and start it fresh. Two bugs defeated that plan.
+</div>
+
+<p><strong>Each cause, in plain English and then in technical detail:</strong></p>
+
+<ol>
+  <li>
+    <p><strong>The "how many times has it failed" counter was being reset every tick, so the restart safety net never fired.</strong></p>
+    <p><em>Plain English:</em> The worker was counting how many times in a row the listener had failed to reconnect, planning to restart it after about three failures (~60 seconds). But because of a misplaced line, the counter was cleared back to zero on every single check &mdash; even while the listener was still broken. So the count could never reach three, the restart never happened, and the listener flapped forever.</p>
+    <p><em>Technical:</em> In <code>worker/src/sessionManager.ts</code>, <code>renewOneListenerLease</code> increments <code>disconnectedRenewTicks</code> when the listener is down and, after <code>disconnectedRenewHealTicks()</code> (default 3 &asymp; 60s) consecutive failures, hard-resets the listener (stop + syncSessions restart). But line 408 executed <code>this.disconnectedRenewTicks.delete(userId)</code> <em>unconditionally</em> on every tick &mdash; including while disconnected &mdash; so the counter never accumulated past 1 and the hard-reset never fired. The lease kept being renewed, so no other worker replica could take the user over either.</p>
+  </li>
+
+  <li>
+    <p><strong>The reconnect step had no time limit, so a network hang froze it forever &mdash; and every later retry was handed the same frozen attempt.</strong></p>
+    <p><em>Plain English:</em> When the worker tried to reconnect a listener, it opened a connection to Telegram and waited. If Telegram did not answer, the code just sat there waiting &mdash; there was no "give up after 45 seconds" limit. Once that happened, every later reconnect request was given the same stuck attempt instead of trying again, so no new reconnect ever actually ran. This is why the flapping never healed on its own.</p>
+    <p><em>Technical:</em> In <code>worker/src/userListener.ts</code>, <code>forceReconnect</code> called <code>client.connect()</code> and the <code>updates.GetState()</code> probe with no timeout. A hung MTProto socket (Telegram DC unreachable) left the <code>reconnectInFlight</code> promise pending forever. <code>requestReconnect</code> returns the existing in-flight promise when one is set (line ~4508), so every subsequent reconnect request became a no-op and no new <code>force reconnect</code> ever ran &mdash; confirmed: the last <code>force reconnect</code> log for <code>af75b63e</code> was 15:41:30. <code>stop()</code> also awaited <code>reconnectInFlight</code> with no bound, so a wedged reconnect blocked <code>disconnectTelegramSession</code> and the lease hard-reset too.</p>
+  </li>
+
+  <li>
+    <p><strong>Two knock-on hazards made things worse: a timed-out connect could double-connect, and a stopped listener could be re-connected.</strong></p>
+    <p><em>Plain English:</em> Once we add a timeout (see section 5), two secondary dangers appeared. First, if a connection attempt timed out but was still finishing in the background, the next retry could open a second connection on the same Telegram account at the same time &mdash; Telegram treats that as a conflict and can drop the session. Second, if a user disconnected their account while a reconnect was mid-flight, the worker could finish reconnecting a listener that had already been told to stop.</p>
+    <p><em>Technical:</em> The retry loop could call <code>client.connect()</code> again while the first (timed-out but still running) connect completes in the background, risking a double connection on the same auth key (<code>AUTH_KEY_DUPLICATED</code>). The loop also only checked <code>stopping</code> at the top of each iteration, so a <code>stop()</code> could return while the loop was still mid-connect and re-establish a live socket on a stopped listener.</p>
+  </li>
+
+  <li>
+    <p><strong>A single mistyped login code destroyed the whole login, even though Telegram allows retrying it.</strong></p>
+    <p><em>Plain English:</em> If a user typed the verification code with one wrong digit, our system treated it as a dead end, wiped the login in progress, and forced the user to request a brand-new code and start over. Telegram actually keeps the login valid across wrong attempts, so this made a trivial typo much more painful than it needed to be &mdash; and combined with the code arriving in the Telegram app (not SMS), it was a real source of user frustration.</p>
+    <p><em>Technical:</em> <code>worker/src/telegramAuthRecovery.ts</code> classified <code>PHONE_CODE_INVALID</code> as fatal, destroying the pending auth and forcing a full <code>send_code</code> restart. Telegram keeps the <code>phoneCodeHash</code> valid across wrong-code retries; the code is only invalidated by expiry or a fresh <code>send_code</code>.</p>
+  </li>
+
+  <li>
+    <p><strong>The on-screen guidance was too easy to miss when the code arrives inside the Telegram app.</strong></p>
+    <p><em>Plain English:</em> When Telegram delivers the login code inside the app itself (which is what it did for these accounts) rather than by SMS, the screen only showed a small line of text saying so. And if that code expired, the user was left on the code screen with no obvious "send a new code" action, unsure what to do next.</p>
+    <p><em>Technical:</em> In <code>src/components/telegram/TelegramConnectFlow.tsx</code>, when <code>codeDelivery === 'app'</code>, the only guidance was a small hint line; after a code expired there was no resend/new-code affordance on the code screen (resend button only showed when <code>canResend</code>).</p>
+  </li>
+</ol>
+
+<div class="box amber">
+<strong>Why the user-visible symptom has happened before with different root causes:</strong> This is the same class of incident (users unable to connect Telegram, <code>delivery=app</code> codes never entered) that previously produced write-ups on 2026-08-14, 2026-08-19 and 2026-09-01. Each time the underlying mechanism was different. The 2026-09-01 "Ruth" fix (<code>2d4c5cb0</code>) addressed a stuck <code>authInFlight</code> in the <em>auth</em> path (see section 8). The flapping loop described here lives in the <em>listener reconnect</em> path and was not covered by that fix.
+</div>
+
+<h2>5. The fix</h2>
+<p>Worker + frontend changes; committed to <code>staging</code> (not yet deployed at time of writing). Each fix, in plain English and then technical detail:</p>
+<ol>
+  <li>
+    <p><strong>Let the restart safety net actually fire.</strong></p>
+    <p><em>Plain English:</em> We moved the "reset the failure counter" step so it only runs when the listener is genuinely back online. Now the count of consecutive failures builds up while the listener is broken, and after about three failures the worker tears the listener down and starts it fresh &mdash; exactly as it was always meant to.</p>
+    <p><em>Technical:</em> <code>worker/src/sessionManager.ts</code> &mdash; moved <code>disconnectedRenewTicks.delete(userId)</code> into the connected (<code>else</code>) branch so the counter accumulates across disconnected ticks and the hard-reset fires after <code>disconnectedRenewHealTicks()</code> failed ticks.</p>
+  </li>
+
+  <li>
+    <p><strong>Put a time limit on every reconnect step.</strong></p>
+    <p><em>Plain English:</em> Every step of reconnecting a listener now has a 45-second cap (configurable). If Telegram does not answer within that time, the attempt is abandoned and treated as failed instead of hanging forever &mdash; so a network problem can no longer freeze the listener or block the login flow. Stopping a listener can no longer be blocked by a stuck reconnect either.</p>
+    <p><em>Technical:</em> <code>worker/src/userListener.ts</code> &mdash; added <code>withTelegramTimeout()</code> (async race helper) and <code>telegramConnectTimeoutMs()</code> (env <code>TELEGRAM_CONNECT_TIMEOUT_MS</code>, default 45s, clamped 5&ndash;120s). Wrapped <code>client.connect()</code>, the <code>updates.GetState()</code> probe, <code>disconnect()</code>, and <code>stop()</code>'s await on <code>reconnectInFlight</code>.</p>
+  </li>
+
+  <li>
+    <p><strong>Stop the two knock-on hazards (double-connect and reconnecting a stopped listener).</strong></p>
+    <p><em>Plain English:</em> When a connection attempt times out, we now close the socket cleanly before trying again, so a slow background connection cannot sneak in and create a second connection on the same Telegram account. And the reconnect routine now checks "has this listener been told to stop?" after every step, so it can never bring a stopped listener back to life.</p>
+    <p><em>Technical:</em> <code>worker/src/userListener.ts</code> &mdash; added <code>if (this.stopping) { disconnect; return/break }</code> after every connect/probe await in both <code>forceReconnect</code> and <code>reconnectAndRetryDialogs</code>, plus a disconnect-before-retry in the transient-error path (prevents <code>AUTH_KEY_DUPLICATED</code>). Post-loop warmup also guards on <code>stopping</code>.</p>
+  </li>
+
+  <li>
+    <p><strong>Let a mistyped login code be retried instead of killing the login.</strong></p>
+    <p><em>Plain English:</em> A wrong verification code no longer wipes the login in progress. The user can simply re-enter the correct code. Only an expired code (or requesting a fresh code) starts a new login &mdash; matching what Telegram actually allows.</p>
+    <p><em>Technical:</em> <code>worker/src/telegramAuthRecovery.ts</code> &mdash; <code>PHONE_CODE_INVALID</code> is now recoverable (keeps the pending auth so the user can retry); <code>PHONE_CODE_EXPIRED</code> remains fatal.</p>
+  </li>
+
+  <li>
+    <p><strong>Make it obvious where the login code arrives, and always offer a way forward.</strong></p>
+    <p><em>Plain English:</em> When Telegram delivers the code inside the app, the screen now shows a clear, unmissable message: "Open Telegram on your phone &hellip; The code is NOT sent by SMS." And there is now always a "Send a new code" button on the code screen, so if the code expires or is missed, the user has a straightforward action instead of being stuck.</p>
+    <p><em>Technical:</em> <code>src/components/telegram/TelegramConnectFlow.tsx</code> &mdash; prominent callout when <code>codeDelivery === 'app'</code>; always-visible "Send a new code" button (when <code>canResend</code> false) re-requesting via <code>send_code</code> through a new <code>onRequestNewCode</code> prop; wired in <code>CopierEnginePage.tsx</code> and <code>TelegramLinkStep.tsx</code> via a shared <code>requestCode()</code> helper.</p>
+  </li>
+
+  <li>
+    <p><strong>Localized the new text.</strong></p>
+    <p><em>Plain English:</em> The new messages are translated for all languages the app supports.</p>
+    <p><em>Technical:</em> Added <code>tgConnectCodeAppHint</code> + <code>sendNewCode</code> keys to <code>en/es/fr/ar</code> and <code>pl/ru/sv/nl/ja</code> (copierEngine bundle) + <code>types.ts</code>.</p>
+  </li>
+</ol>
+
+<h2>6. Files changed</h2>
+<table class="tbl">
+  <tr><th>File</th><th>Change</th></tr>
+  <tr><td><code>worker/src/sessionManager.ts</code></td><td>Heal counter delete moved into connected branch (hard-reset can now fire)</td></tr>
+  <tr><td><code>worker/src/userListener.ts</code></td><td><code>withTelegramTimeout</code> + <code>telegramConnectTimeoutMs</code>; connect/probe/disconnect/stop bounded; stopping checks after every await; disconnect-before-retry</td></tr>
+  <tr><td><code>worker/src/telegramAuthRecovery.ts</code></td><td><code>PHONE_CODE_INVALID</code> recoverable; removed from fatal list</td></tr>
+  <tr><td><code>worker/src/telegramAuthRecovery.test.ts</code></td><td>Tests updated to assert the new classification</td></tr>
+  <tr><td><code>worker/src/withTelegramTimeout.test.ts</code> (new)</td><td>3 tests: resolve / timeout-reject / error-reject for the timeout helper</td></tr>
+  <tr><td><code>src/components/telegram/TelegramConnectFlow.tsx</code></td><td>Prominent app-delivery callout; "Send a new code" button; <code>onRequestNewCode</code> prop</td></tr>
+  <tr><td><code>src/pages/dashboard/CopierEnginePage.tsx</code>, <code>src/pages/onboarding/steps/TelegramLinkStep.tsx</code></td><td>Extracted <code>requestCode()</code> helper, wired to <code>onRequestNewCode</code></td></tr>
+  <tr><td><code>src/i18n/locales/{en,es,fr,ar}.ts</code>, <code>src/i18n/locales/copierEngine/{pl,ru,sv,nl,ja}.ts</code>, <code>types.ts</code></td><td>New <code>tgConnectCodeAppHint</code> + <code>sendNewCode</code> keys</td></tr>
+</table>
+
+<h2>7. Verification</h2>
+<ul>
+  <li>Worker typecheck (<code>npm --prefix worker run build</code> / <code>tsc</code>): PASS.</li>
+  <li>Worker tests (<code>telegramAuthRecovery</code>, <code>authService.resend</code>, <code>sessionManager.shutdown</code>, <code>sessionManager.realtime</code>, <code>withTelegramTimeout</code>): 48 pass / 0 fail.</li>
+  <li>Frontend typecheck (<code>tsc -b</code>): PASS.</li>
+  <li>Frontend component test (<code>TelegramConnectFlow.test.ts</code>, vitest): 2 pass / 0 fail.</li>
+  <li>ESLint on all changed files: clean. (Pre-existing React-Compiler debt in the two page files is unrelated to this change.)</li>
+  <li>Post-implementation review: an automated code review caught a critical defect in the first version of <code>withTelegramTimeout</code> (it was not <code>async</code>, so the timer was cleared synchronously and the timeout never fired) plus two high-severity hazards (orphaned connect, post-stop reconnect). All were fixed, regression-tested, and re-reviewed &rarr; APPROVE_WITH_NOTES, with both optional notes applied.</li>
+</ul>
+
+<h2>8. How this ties to the 2026-09-01 fix</h2>
+<div class="box green">
+<p><strong>In plain English:</strong> This is not the first time users could not get a Telegram login code, and it is worth explaining how this incident relates to the fix we made on September 1 ("the Ruth fix"), because the two incidents share a surface symptom but had different underlying causes &mdash; and both fixes are needed.</p>
+</div>
+<ul>
+  <li><strong>The September 1 problem:</strong> a login-code request could get stuck waiting to take over the account, and while it was stuck, every new request was refused with "a login is already in progress." That fix added a time limit (90 seconds) and an auto-expiry (2 minutes) to the <em>login request</em> part of the flow, so a hung login could never block future logins forever. Those settings are unchanged and still in place today.</li>
+  <li><strong>The September 7 problem (this report):</strong> the stuck part was not the login request &mdash; it was the <em>listener reconnect</em>. The September 1 timeout protected the login path (which is exactly why these users' code requests failed cleanly after 90 seconds instead of hanging), but it did <em>not</em> put any time limit on reconnecting the listener itself. That unlimited wait is what wedged the listener and produced the flapping loop.</li>
+  <li><strong>Why both fixes are needed:</strong> the September 1 fix keeps login requests from hanging; this fix keeps a broken listener from flapping forever and from blocking new login attempts. Together they cover both halves of the flow.</li>
+</ul>
+
+<h2>9. What to expect after deploy</h2>
+<ul>
+  <li>A disconnected listener now recovers or is cleanly restarted within ~60 seconds (default <code>LISTENER_DISCONNECT_HEAL_TICKS</code> = 3 &times; 20s renew interval), instead of flapping for hours.</li>
+  <li>A network hang can no longer freeze reconnect indefinitely &mdash; each connect/probe/disconnect step is bounded (45s default), and <code>stop()</code> cannot be blocked by a wedged reconnect.</li>
+  <li>A mistyped login code no longer destroys the pending login &mdash; the user can simply re-enter the code. Only an expired code (or a fresh <code>send_code</code>) starts a new login.</li>
+  <li>Users connecting by phone see a clear message that the code arrives inside the Telegram app (not SMS) and always have a "Send a new code" action.</li>
+  <li>Important: Telegram controls delivery. The login code will still be delivered inside the Telegram app for these accounts (<code>delivery=app</code>); we cannot force an SMS. Users must open Telegram on their phone and look for the message from Telegram.</li>
+</ul>
+
+<h2>10. How we will test it ourselves</h2>
+<ol>
+  <li><strong>Unit / type level (already green):</strong> worker <code>tsc</code>, the 5 targeted worker test files (48 tests), frontend <code>tsc -b</code>, the 2 component tests, and ESLint on changed files.</li>
+  <li><strong>Staging deploy:</strong> push <code>staging</code> to the upstream Railway branch; confirm Listener/Trade/Backtest deployments build (Docker <code>npm run build</code>) and reach <code>SUCCESS</code> via the Railway GraphQL API.</li>
+  <li><strong>Verify the four flapping users stop flapping:</strong> after deploy, watch production Railway logs for <code>af75b63e</code>, <code>30c3fa79</code>, <code>494bdb70</code>, <code>dd18ad68</code>. The <code>listener disconnected but renewing lease anyway</code> cadence should stop; any disconnected listener should be hard-reset once and then stay connected (or be restarted cleanly by syncSessions).</li>
+  <li><strong>Timeout behavior:</strong> with <code>TELEGRAM_CONNECT_TIMEOUT_MS</code> set low in a staging env, force a hung connect (e.g. block outbound MTProto) and confirm the reconnect cycle logs a timeout and retries/exhausts instead of wedging <code>reconnectInFlight</code>, and that <code>stop()</code>/<code>disconnectTelegramSession</code> still completes.</li>
+  <li><strong>Auth retry behavior:</strong> in a staging session, call <code>verify_code</code> with a wrong code and confirm the error surfaces to the UI and the pending auth survives for a retry; confirm <code>PHONE_CODE_EXPIRED</code> still starts a fresh login.</li>
+  <li><strong>UI:</strong> open the connect flow in a browser with a phone login, confirm the "code arrives in the Telegram app" callout and the "Send a new code" button appear, and that QR fallback still shows.</li>
+</ol>
+
+<h2>11. Deployment status</h2>
+<div class="box amber">
+<strong>Not yet deployed &mdash; the storm is live in production right now.</strong> The fix is committed to the <code>staging</code> branch (frontend + worker) but has not shipped. Until it deploys, the affected users continue to flap. Deployment requires: (1) push <code>staging</code> to the upstream Railway branch, (2) confirm the listener/trade worker deployments succeed, (3) after validation on staging, propagate to <code>main</code> and production. The frontend changes additionally require a Netlify redeploy (env vars are baked at build time).
+</div>
+
+<h2>12. Follow-ups</h2>
+<ul>
+  <li>Deploy worker to Railway staging, then prod; deploy frontend to Netlify.</li>
+  <li>Re-check <code>mrfun1981@gmail.com</code> and <code>collinsvaldes63@gmail.com</code>: after deploy they should be able to reconnect via QR (or phone, checking the Telegram app for the code). Their <code>telegram_account_claims</code> rows are intact; a new session is created on successful connect.</li>
+  <li>Consider raising <code>LISTENER_DISCONNECT_HEAL_TICKS</code> if a slow-but-legitimate reconnect (&gt;60s) is observed being hard-reset too eagerly.</li>
+  <li>Consider alerting on repeated <code>listener disconnected but renewing lease anyway</code> so a future storm is caught before users report it (same lesson as the 2026-08-24 realtime incident).</li>
+  <li>Investigate the worker-instance/DC connectivity that exposed the bug (4 users affected in lockstep) &mdash; the reconnect-timeout fix bounds the damage but the underlying network cause should be understood.</li>
+</ul>
+
+</body>
+</html>

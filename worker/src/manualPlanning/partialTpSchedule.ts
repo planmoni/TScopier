@@ -10,7 +10,7 @@ export interface PlanSinglePartialTpsArgs {
   /** Targets % rows aligned to finalTps[0..] (from resolveTpBucketRows). */
   bucketRows: Array<{ percent?: number }>
   /** Preferred broker TP in Single mode. */
-  singleTpTarget?: 'tp1' | 'tp2' | 'tp3' | 'farthest'
+  singleTpTarget?: `tp${number}` | 'farthest'
   /** Optional direction hint so "farthest" can use price extremes. */
   isBuy?: boolean
 }
@@ -28,23 +28,25 @@ export interface PlanSinglePartialTpsResult {
 
 export function normalizeSingleTpTarget(
   raw: unknown,
-): 'tp1' | 'tp2' | 'tp3' | 'farthest' {
+): `tp${number}` | 'farthest' {
   const v = String(raw ?? 'farthest').toLowerCase()
-  if (v === 'tp1' || v === 'tp2' || v === 'tp3') return v
-  return 'farthest'
+  const m = v.match(/^tp(\d+)$/)
+  return m ? (`tp${m[1]}` as `tp${number}`) : 'farthest'
 }
 
 export function resolveSingleTpTargetIndex(args: {
   finalTps: number[]
-  singleTpTarget?: 'tp1' | 'tp2' | 'tp3' | 'farthest'
+  singleTpTarget?: `tp${number}` | 'farthest'
   isBuy?: boolean
 }): number {
   const { finalTps, isBuy } = args
   if (!Array.isArray(finalTps) || finalTps.length === 0) return -1
   const target = normalizeSingleTpTarget(args.singleTpTarget)
-  if (target === 'tp1') return 0
-  if (target === 'tp2') return Math.min(1, finalTps.length - 1)
-  if (target === 'tp3') return Math.min(2, finalTps.length - 1)
+  const tpMatch = target.match(/^tp(\d+)$/)
+  if (tpMatch) {
+    const idx = Number(tpMatch[1]) - 1
+    return Math.min(Math.max(0, idx), finalTps.length - 1)
+  }
 
   if (isBuy === true) {
     let idx = 0

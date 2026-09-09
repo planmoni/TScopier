@@ -48,6 +48,8 @@ export const copierEngineNl: CopierEngineBundleTranslations = {
     sendCode: 'Code versturen',
     verificationCode: 'Verificatiecode',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'Open de Telegram-app op je telefoon en zoek naar een bericht van Telegram met de 5-cijferige inlogcode. De code wordt NIET per sms verzonden.',
+    sendNewCode: 'Nieuwe code verzenden',
     sentTo: 'Verzonden naar {phone}',
     twoFaPassword: '2FA-wachtwoord',
     twoFaPlaceholder: 'Je Telegram-wachtwoord',

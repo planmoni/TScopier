@@ -22,12 +22,15 @@ export function AppCopierSetupBanner() {
 
   if (parts.length === 0) return null
 
+  const sep = cp.bannerLastSep ?? ' and '
   const list =
     parts.length === 1
       ? parts[0]
-      : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+      : parts.length === 2
+        ? `${parts[0]}${sep}${parts[1]}`
+        : `${parts[0]}, ${parts[1]}${sep}${parts[2]}`
 
-  const href = missingBroker ? '/brokers' : '/copier'
+  const href = missingBroker ? '/brokers' : '/channels'
 
   return (
     <div
@@ -36,7 +39,7 @@ export function AppCopierSetupBanner() {
     >
       <Settings2 className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
       <p className="min-w-0 font-medium leading-snug">
-        To start the copier, please {list}.{' '}
+        {(cp.bannerText ?? 'To start the copier, please {items}.').replace('{items}', list)}{' '}
         <Link
           to={href}
           className="underline underline-offset-2 hover:text-amber-700 dark:hover:text-amber-100"

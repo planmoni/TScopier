@@ -38,7 +38,7 @@ import { PageShell } from '../../components/layout/PageShell'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { TelegramConnectFlow, type TelegramConnectStage, type TelegramAuthMethod } from '../../components/telegram/TelegramConnectFlow'
-import { callTelegramAuth, resolveTelegramAuthErrorMessage, type QrPollResponse, type TelegramCodeStatusResponse } from '../../lib/telegramAuthApi'
+import { callTelegramAuth, resolveResendAvailableAt, resolveTelegramAuthErrorMessage, type QrPollResponse, type TelegramCodeStatusResponse } from '../../lib/telegramAuthApi'
 import {
   getCachedTgChannels,
   invalidateTgChannelsCache,
@@ -744,8 +744,7 @@ export function CopierEnginePage() {
     }
   }
 
-  const sendCode = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const requestCode = async () => {
     setTgError('')
     setTgLoading(true)
     try {
@@ -764,7 +763,7 @@ export function CopierEnginePage() {
       setTgPhone(phone)
       setTgCodeDelivery(data.delivery ?? null)
       setTgNextCodeDelivery(data.next_delivery ?? null)
-      setTgResendAvailableAt(data.resend_available_at ?? null)
+      setTgResendAvailableAt(resolveResendAvailableAt(data))
       setTgCanResendCode(Boolean(data.can_resend))
       setTgStage('code')
     } catch {
@@ -772,6 +771,11 @@ export function CopierEnginePage() {
     } finally {
       setTgLoading(false)
     }
+  }
+
+  const sendCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    await requestCode()
   }
 
   const resendCode = async () => {
@@ -792,7 +796,7 @@ export function CopierEnginePage() {
       setTgPhone(phone)
       setTgCodeDelivery(data.delivery ?? null)
       setTgNextCodeDelivery(data.next_delivery ?? null)
-      setTgResendAvailableAt(data.resend_available_at ?? null)
+      setTgResendAvailableAt(resolveResendAvailableAt(data))
       setTgCanResendCode(Boolean(data.can_resend))
       setTgStage('code')
     } catch {
@@ -943,6 +947,7 @@ export function CopierEnginePage() {
           error={tgError}
           onSendCode={sendCode}
           onResendCode={resendCode}
+          onRequestNewCode={requestCode}
           onVerifyCode={verifyCode}
           onStartQr={startQrLogin}
           onVerifyQrPassword={verifyQrPassword}

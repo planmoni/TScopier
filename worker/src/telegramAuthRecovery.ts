@@ -19,6 +19,14 @@ export function isRecoverableTelegramAuthError(err: unknown): boolean {
     return true
   }
 
+  // A wrong app/SMS code — Telegram keeps the phoneCodeHash valid across
+  // retries, so one typo must NOT destroy the whole pending auth. Previously
+  // PHONE_CODE_INVALID was classified fatal, forcing a full send_code restart
+  // (and, combined with stale-code invalidation, repeated 5-digit-code failures).
+  if (m.includes('phone_code_invalid')) {
+    return true
+  }
+
   // Transient Telegram / network issues during verify.
   if (
     m.includes('timeout')
@@ -40,7 +48,6 @@ export function isPhoneCodeFatalAuthError(err: unknown): boolean {
   const m = (err instanceof Error ? err.message : String(err ?? '')).toUpperCase()
   return (
     m.includes('PHONE_CODE_EXPIRED')
-    || m.includes('PHONE_CODE_INVALID')
     || m.includes('PHONE_NUMBER_INVALID')
     || m.includes('PHONE_CODE_EMPTY')
   )

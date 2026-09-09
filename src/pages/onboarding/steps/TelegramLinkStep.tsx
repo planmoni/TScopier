@@ -4,6 +4,7 @@ import { useT } from '../../../context/LocaleContext'
 import { resolveTelegramAuthError, isNoPendingPhoneAuthError } from '../../../lib/telegramAuthError'
 import {
   callTelegramAuth,
+  resolveResendAvailableAt,
   resolveTelegramAuthErrorMessage,
   type QrPollResponse,
   type TelegramCodeDelivery,
@@ -146,8 +147,7 @@ export function TelegramLinkStep({ onDone }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll while QR URL is present
   }, [stage, session?.access_token, Boolean(qrUrl), handleLinked, ce.failedStartQr, ce])
 
-  const sendCode = async (e: FormEvent) => {
-    e.preventDefault()
+  const requestCode = async () => {
     setError('')
     setLoading(true)
     try {
@@ -165,7 +165,7 @@ export function TelegramLinkStep({ onDone }: Props) {
       setPhone(normalizedPhone)
       setCodeDelivery(data.delivery ?? null)
       setNextCodeDelivery(data.next_delivery ?? null)
-      setResendAvailableAt(data.resend_available_at ?? null)
+      setResendAvailableAt(resolveResendAvailableAt(data))
       setCanResendCode(Boolean(data.can_resend))
       setStage('code')
     } catch {
@@ -173,6 +173,11 @@ export function TelegramLinkStep({ onDone }: Props) {
     } finally {
       setLoading(false)
     }
+  }
+
+  const sendCode = async (e: FormEvent) => {
+    e.preventDefault()
+    await requestCode()
   }
 
   const handleStageChange = (nextStage: TelegramConnectStage) => {
@@ -214,7 +219,7 @@ export function TelegramLinkStep({ onDone }: Props) {
       setPhone(normalizedPhone)
       setCodeDelivery(data.delivery ?? null)
       setNextCodeDelivery(data.next_delivery ?? null)
-      setResendAvailableAt(data.resend_available_at ?? null)
+      setResendAvailableAt(resolveResendAvailableAt(data))
       setCanResendCode(Boolean(data.can_resend))
       setStage('code')
     } catch {
@@ -397,6 +402,7 @@ export function TelegramLinkStep({ onDone }: Props) {
       error={error}
       onSendCode={sendCode}
       onResendCode={resendCode}
+      onRequestNewCode={requestCode}
       onVerifyCode={verifyCode}
       onStartQr={startQrLogin}
       onVerifyQrPassword={verifyQrPassword}

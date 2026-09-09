@@ -47,6 +47,8 @@ export const copierEngineRu: CopierEngineBundleTranslations = {
     sendCode: 'Отправить код',
     verificationCode: 'Код подтверждения',
     verificationPlaceholder: '12345',
+    tgConnectCodeAppHint: 'Откройте приложение Telegram на телефоне и найдите сообщение от Telegram с 5-значным кодом входа. Код НЕ отправляется по SMS.',
+    sendNewCode: 'Отправить новый код',
     sentTo: 'Отправлено на {phone}',
     twoFaPassword: 'Пароль 2FA',
     twoFaPlaceholder: 'Ваш пароль Telegram',

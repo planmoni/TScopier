@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { AppAnnouncementBar } from './AppAnnouncementBar'
-import { AppCopierSetupBanner } from './AppCopierSetupBanner'
 import { AppSubscriptionBanner } from './AppSubscriptionBanner'
 import { AppWarningBanner } from './AppWarningBanner'
 
@@ -35,7 +34,6 @@ export function AppTopBanners() {
       <AppAnnouncementBar />
       <AppWarningBanner />
       <AppSubscriptionBanner />
-      <AppCopierSetupBanner />
     </div>
   )
 }

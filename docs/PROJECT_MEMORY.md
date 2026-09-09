@@ -2,6 +2,74 @@
 
 ## Changelog
 
+### 2026-09-08 — Telegram listener reconnect storm: flapping loop that blocked new logins (users could not re-connect Telegram)
+
+- **Plain English:** Several users reported they could not connect their Telegram account. Behind the scenes their listeners were stuck in a loop — constantly dropping and reconnecting every ~20 seconds for hours — and during that state the app could not even request a fresh login code. The failure had two parts: a counting bug meant the safety mechanism that should have restarted a stuck listener never fired, and a network hang could permanently freeze the reconnect logic. We fixed both so a stuck listener now either recovers on its own or is cleanly restarted, and a single mistaken login code no longer forces the user to start over.
+- **Root cause (technical):**
+  1. `sessionManager.ts` `renewOneListenerLease` deleted the `disconnectedRenewTicks` counter **unconditionally** every renew tick (line 408), even while the listener was disconnected. The counter is what triggers the hard-reset escape hatch after `disconnectedRenewHealTicks()` failed ticks (default 3 ≈ 60s); because it was wiped each tick, the hard-reset never fired and a wedged listener flapped "disconnected but renewing lease anyway" every ~20s indefinitely. The lease kept getting renewed, so no other worker replica could take the user over.
+  2. `userListener.ts` `forceReconnect` called `client.connect()` with **no timeout**. A hung MTProto socket (Telegram DC unreachable) left `reconnectInFlight` pending forever; `requestReconnect` returns the existing in-flight promise when one is set (line 4508), so every subsequent reconnect request became a no-op and no new `force reconnect` ever ran. `stop()` also awaited `reconnectInFlight` unbounded, so a wedged reconnect blocked `disconnectTelegramSession` and the lease hard-reset.
+  3. `telegramAuthRecovery.ts` classified `PHONE_CODE_INVALID` as **fatal**, destroying the pending auth on a single typo'd code. Telegram actually keeps the `phoneCodeHash` valid across wrong-code retries, so this forced a full `send_code` restart for a trivially recoverable mistake.
+- **Fix (files):**
+  - `worker/src/sessionManager.ts` — moved `disconnectedRenewTicks.delete(userId)` into the `else` (connected) branch so the counter accumulates across disconnected ticks and the hard-reset actually fires after `disconnectedRenewHealTicks()` failed ticks.
+  - `worker/src/userListener.ts` — added `withTelegramTimeout()` (async race helper) + `telegramConnectTimeoutMs()` (env `TELEGRAM_CONNECT_TIMEOUT_MS`, default 45s, clamped 5–120s). Wrapped `client.connect()` + `updates.GetState()` probe in `forceReconnect` and `reconnectAndRetryDialogs`, and `stop()`'s await on `reconnectInFlight`, so a hung socket can never wedge reconnect or block disconnect. Added `if (this.stopping) { disconnect; return/break }` after every connect/probe await, and disconnect-before-retry in the transient-error catch, so a timed-out-but-orphaned connect cannot double-connect (AUTH_KEY_DUPLICATED risk) and a stopped listener cannot be re-connected. Post-loop warmup also guards on `this.stopping`.
+  - `worker/src/telegramAuthRecovery.ts` — `PHONE_CODE_INVALID` now recoverable (keeps pending auth so the user can retry the code); `PHONE_CODE_EXPIRED` remains fatal.
+  - `src/components/telegram/TelegramConnectFlow.tsx` — when `codeDelivery === 'app'`, shows a prominent callout: "Open Telegram on your phone … The code is NOT sent by SMS." Added an always-visible "Send a new code" button (when `canResend` false) that re-requests via `send_code` through the new `onRequestNewCode` prop, so users stranded after expiry/no-resend can restart cleanly.
+  - `src/pages/dashboard/CopierEnginePage.tsx` + `src/pages/onboarding/steps/TelegramLinkStep.tsx` — extracted a `requestCode()` helper (shared by `sendCode` and `onRequestNewCode`).
+  - `src/i18n/locales/{en,es,fr,ar}.ts` + `src/i18n/locales/copierEngine/{pl,ru,sv,nl,ja}.ts` + `types.ts` — added `tgConnectCodeAppHint` + `sendNewCode` keys.
+  - `worker/src/withTelegramTimeout.test.ts` (new) — 3 tests proving the timeout helper resolves / times out / propagates errors.
+- **Design decisions:**
+  - `withTelegramTimeout` does not cancel the underlying connect — the cycle just stops waiting and treats the attempt as failed; the client is disconnected before the next retry to avoid double-connect.
+  - The timeout timer is not `unref`'d because it is always cleared in `finally` and only holds the loop during the bounded race.
+  - Kept `PHONE_CODE_EXPIRED` fatal (the code is genuinely dead) while making only `PHONE_CODE_INVALID` recoverable — matches Telegram's documented behavior.
+- **Tests/verification:** worker `tsc` PASS; 48 worker tests PASS (telegramAuthRecovery, authService.resend, sessionManager.shutdown/realtime, withTelegramTimeout); frontend `tsc -b` PASS; 2 vitest component tests PASS; eslint clean on all changed files (page-file React Compiler errors are pre-existing debt). Post-implementation review (code-review subagent) found a CRITICAL bug in the timeout helper (non-async `finally` cancelled the timer synchronously) + 2 HIGH hazards (orphaned connect, post-stop reconnect); all fixed and re-reviewed → APPROVE_WITH_NOTES, with the 2 optional LOW notes also applied.
+- **Deploy state:** committed to `staging` branch; NOT yet deployed (requires Railway deploy of listener/trade worker to staging, then prod).
+- **Follow-ups:** 
+  1. Deploy worker to Railway staging (then prod) to activate the reconnect-timeout + heal-counter fixes.
+  2. Consider bumping `LISTENER_DISCONNECT_HEAL_TICKS` env if a slow-but-legit reconnect (>60s) gets hard-reset too eagerly.
+  3. Monitor Railway logs for the 4 flapping users (`af75b63e`, `30c3fa79`, `494bdb70`, `dd18ad68`) — they should no longer flap after deploy.
+
+### 2026-09-07 — signal-review-email: Telegram self-notification + Promotions tab fix attempt
+
+- **Plain English:** Users receiving "signal awaiting approval" emails were finding them in Gmail's Promotions tab instead of Primary. We added Telegram Saved Messages as a second notification channel (instant, no deliverability issues) and attempted to fix the email Promotions classification by adding `List-Unsubscribe` headers, a `categories: ["transactional"]` flag, and checking DNS authentication. The email was confirmed working (Resend accepted it, `email_campaign_log` row exists) — the issue was Gmail classification, not delivery.
+- **Root cause (technical):** Gmail's Promotions classifier uses sender reputation, email content patterns, and authentication signals. The `noreply@tscopier.ai` sender prefix is a known negative signal. SPF, DKIM, and DMARC were already correctly configured (`include:amazonses.com` was present). The real bottleneck is sender reputation — a new domain with limited send history and engagement naturally gets flagged.
+- **Fix (files):**
+  - `supabase/functions/signal-review-email/index.ts` — added `List-Unsubscribe` header, `X-Entity-Id` dedup header, `categories: ["transactional"]` to Resend API call; added `SIGNAL_REVIEW_EMAIL_FROM` env var fallback so the sender address can be changed without altering the shared `RESEND_CAMPAIGN_FROM`; removed unused `buildAuthEmailHtml` and `resolveEmailLogoUrl` imports (template was already inline from prior fix).
+  - `worker/src/userListener.ts` — added `notifyHumanReviewTelegram()` method to `UserListener` class; sends a plain-text message to the user's Saved Messages via MTProto (`Api.messages.SendMessage` with `InputPeerSelf`); includes signal details (symbol, action, entry, SL, TP, raw message) and a review link; fire-and-forget with error logging. Wired alongside `notifyHumanReviewEmail` at the `aiMeta.reviewRequired` call site.
+- **Design decisions:**
+  - Telegram self-notification uses the existing MTProto client (no bot needed). The worker already has the user's authenticated session — it just hadn't sent messages before.
+  - The `SIGNAL_REVIEW_EMAIL_FROM` env var allows per-function sender overrides without changing the shared `RESEND_CAMPAIGN_FROM` used by other email functions.
+  - Email template remains styled (not stripped to plain text) because signal details (symbol, action, entry, SL, TP) need to be readable. The Promotions issue is reputation-based, not content-based.
+- **DNS findings:** SPF record already included `include:amazonses.com`. Adding it again created a duplicate SPF record (RFC violation → `PermError`). The duplicate was removed. DKIM (`resend._domainkey.tscopier.ai`) and DMARC (`_dmarc.tscopier.ai`, `p=none`) were already correct.
+- **Deploy state:** Edge function deployed to staging (`axdcledcyhyvzrnfkwat`) and prod (`sxkpcovbyaficvtkpsdo`). Worker code merged into `staging` branch (not yet deployed — requires Railway deploy).
+- **Follow-ups:** 
+  1. Set `SIGNAL_REVIEW_EMAIL_FROM="TScopier <app@tscopier.ai>"` in Supabase Edge Function secrets on both projects (requires dashboard access).
+  2. Monitor whether the sender address change reduces Promotions placement.
+  3. Over time, sender reputation will build as more users engage with emails (move to Primary, open, click). This is the most reliable path out of Promotions.
+  4. Deploy worker to staging to enable Telegram self-notifications.
+
+### 2026-09-03 — Copier setup banner: specific missing-item messaging below navbar
+
+- **Plain English:** When a user tries to start the copier but hasn't finished setting up their account, they now see an amber banner directly below the top navigation bar that tells them exactly what's missing — "link a broker", "connect Telegram", "add a channel" — with a link to the right page to fix it. Previously the copier toggle button just showed a generic disabled "Copier Stopped" message with no way to resolve it. The earlier "Fix setup" link on the toggle button itself was removed in favour of this more prominent, full-width banner approach. Two defects found during rollout were fixed: the banner initially crashed the whole page (blank screen), and then, after a stop-gap fix, it silently never appeared at all.
+- **Root cause (technical):**
+  1. The first version mounted `AppCopierSetupBanner` inside `AppTopBanners` (App.tsx level), which renders **above** `AppShell` — outside `BrokerAccountsProvider`. The banner calls `useCopierStartBlocked`, which calls `useBrokerAccounts()`; that hook throws when no provider exists → whole app crashed → blank page.
+  2. The stop-gap made broker state default to "loading" forever when the provider is absent (`useBrokerAccountsOptional` + `brokersLoading = true`), which stopped the crash but made `resolving` permanently true — the banner could never render anywhere, on any page.
+  3. Proper fix (commit `6d094ab1`): mount the banner in `AppLayout`'s `<main>` region, directly below the top navbar — inside `BrokerAccountsProvider`. The workaround was fully reverted; `useBrokerAccounts()` stays strict (throws) so a silent degradation path cannot reappear.
+  4. Post-review fixes (commit `b3c2f9bd`): the CTA linked to `/copier`, a non-existent route that fell into the referral-code catch-all and sent logged-in users to `/signup` — now links to `/channels`. Copy was English-only outside `en` — now all 8 locales have the keys and the sentence frame/conjunction are locale templates. Banner is gated on `deferAppBootstrap` so it cannot flash a false "link a broker" while broker state is still loading.
+- **Fix (files):**
+  - `src/hooks/useCopierStartBlocked.ts` — extended return object with `missingBroker`, `missingTelegram`, `missingChannels` booleans (derived from the existing internal checks); strict `useBrokerAccounts()`.
+  - `src/components/layout/AppCopierSetupBanner.tsx` — new component: amber banner with `Settings2` icon, lists missing items, links to `/brokers` (if broker missing) or `/channels` (otherwise). i18n via `bannerText` template (`{items}`) + `bannerLastSep` per locale.
+  - `src/components/layout/AppLayout.tsx` — banner rendered as first child of `<main>` (below the top navbar), gated on `!deferAppBootstrap`.
+  - `src/components/layout/AppTopBanners.tsx` — unchanged (reverted; banner does not live here).
+  - `src/components/layout/CopierPauseToggle.tsx` — reverted: removed the `Link`-based "Fix setup" override; button is now always a disabled red button when locked.
+  - `src/i18n/locales/{en,es,fr}.ts` + `src/i18n/locales/chrome/{pl,ru,sv,nl,ja,ar}.ts` + `types.ts` — added `setupBroker`, `setupTelegram`, `setupChannels`, `bannerAction`, `bannerText`, `bannerLastSep` keys to `copierPause`.
+- **Design decisions:**
+  - Banner renders below the top navbar inside the authenticated layout (scrolls with content), not in the fixed banner stack above the header — that stack is outside the broker provider.
+  - If the broker is missing, the "Go to setup" link points to `/brokers`. For Telegram or channel issues, it points to `/channels` (setup page hosting Telegram connect + channel management). `/copier` does not exist as a route and must not be linked.
+  - Subscription-blocked state is unaffected — that still shows the disabled red button on the toggle with no banner, since it requires a different resolution flow.
+- **Tests/verification:** `npx tsc -b` clean; lint clean on all changed/new files (pre-existing debt in `useCopierStartBlocked.ts`/`BrokerAccountsContext.tsx` on untouched lines is unrelated); full `npm test` suite passes (vitest + node:test); `vite build` clean. Post-implementation review (code-tester + code-review subagents): tester PASS; reviewer findings (HIGH `/copier` dead link, MEDIUM i18n, LOW bootstrap flash) all fixed and re-verified.
+- **Deploy state:** Commits `01f2ce2e`, `89fcda9a`, `6d094ab1`, `b3c2f9bd` on `staging`. `01f2ce2e` + `89fcda9a` pushed to `origin/main`, `origin/staging`, `upstream/staging`. `6d094ab1` pushed to `origin/staging` + `upstream/staging`. `b3c2f9bd` pushed to `origin/staging` only — needs push to `upstream/staging` (and `origin/main` if this is release-worthy).
+- **Follow-ups:** Consider surfacing the specific missing precondition in the tooltip on the disabled toggle button as well (e.g. "No connected broker account"), for users who look at the button instead of the banner.
+
 ### 2026-09-03 — signal-review-email: fix edge function auth preventing approval emails
 
 - **Plain English:** Users who should receive "signal waiting for your approval" emails were not getting them. The worker was correctly detecting signals that need human review and attempting to send the email, but the email function itself was failing silently before it could send anything. We removed the faulty security check, deployed the function to both environments, and confirmed emails now reach users' inboxes.

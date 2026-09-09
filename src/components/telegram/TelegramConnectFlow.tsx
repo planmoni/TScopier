@@ -34,6 +34,7 @@ interface TelegramConnectFlowProps {
   error: string
   onSendCode: (e: FormEvent) => void
   onResendCode: () => void
+  onRequestNewCode: () => void
   onVerifyCode: (e: FormEvent) => void
   onStartQr: () => void
   onVerifyQrPassword: (e: FormEvent) => void
@@ -86,6 +87,7 @@ export function TelegramConnectFlow({
   error,
   onSendCode,
   onResendCode,
+  onRequestNewCode,
   onVerifyCode,
   onStartQr,
   onVerifyQrPassword,
@@ -235,7 +237,7 @@ export function TelegramConnectFlow({
           </ul>
         )}
 
-        {(stage === 'phone' || stage === 'code' || stage === 'twoFa' || stage === 'qr') && (
+        {(stage === 'phone' || stage === 'twoFa' || stage === 'qr') && (
           <div className="mb-4 px-3 py-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 rounded-xl flex items-start gap-2.5">
             <TriangleAlert className="w-4 h-4 text-amber-600 dark:text-amber-500 flex-shrink-0 mt-0.5" />
             <p className="text-xs text-amber-800 dark:text-amber-200/90 leading-relaxed">{ce.tgConnectPhoneWarning}</p>
@@ -323,6 +325,14 @@ export function TelegramConnectFlow({
 
         {stage === 'code' && (
           <form onSubmit={onVerifyCode} className="space-y-4">
+            {codeDelivery === 'app' && (
+              <Alert variant="warning" className="text-left">
+                <div className="flex items-start gap-2">
+                  <Smartphone className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <p>{ce.tgConnectCodeAppHint}</p>
+                </div>
+              </Alert>
+            )}
             <Input
               label={ce.verificationCode}
               placeholder={ce.verificationPlaceholder}
@@ -335,22 +345,23 @@ export function TelegramConnectFlow({
             <Button type="submit" loading={loading} size="lg" className="w-full">
               {ce.verify}
             </Button>
-            {canResend && (
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full"
-                disabled={loading || resendWaitSeconds > 0}
-                onClick={onResendCode}
-              >
-                {resendWaitSeconds > 0
-                  ? `Request another delivery method in ${resendWaitSeconds}s`
-                  : 'Request another delivery method'}
-              </Button>
-            )}
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full"
+              disabled={loading || resendWaitSeconds > 0}
+              onClick={canResend ? onResendCode : onRequestNewCode}
+            >
+              {resendWaitSeconds > 0
+                ? `${ce.sendNewCode} (${resendWaitSeconds}s)`
+                : canResend
+                  ? 'Request another delivery method'
+                  : ce.sendNewCode}
+            </Button>
             {noAppFallback && (
               <Button
                 type="button"
+                variant="ghost"
                 className="w-full"
                 onClick={() => {
                   onAuthMethodChange('qr')
