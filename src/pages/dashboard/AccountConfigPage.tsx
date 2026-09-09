@@ -3347,9 +3347,6 @@ export function AccountConfigPage() {
                                   onChange={(key, value) => setChannelFilter(configDraft.selectedChannelId!, key, value)}
                                   onReset={() => resetChannelFilters(configDraft.selectedChannelId!)}
                                 />
-                                {showMinLotPartialCloseWarning ? (
-                                  <Alert variant="warning">{cm.risk.minLotPartialCloseWarning}</Alert>
-                                ) : null}
                               </section>
                               {!keywordFiltersEnabled ? (
                                 <div className="absolute inset-0 z-10 flex items-center justify-center p-4">
